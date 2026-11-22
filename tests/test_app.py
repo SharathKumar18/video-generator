@@ -63,7 +63,14 @@ class VideoGeneratorTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Video Generator: flow, models, and libraries", response.data)
-        self.assertIn(b"Animated poses, props, effects", response.data)
+        for flow in (
+            b"Flow 1: Transcript only",
+            b"Flow 2: Transcript + images",
+            b"Flow 3: Existing audio + images",
+            b"Flow 4: Transcript + video",
+        ):
+            self.assertIn(flow, response.data)
+        self.assertIn(b"Whisper is speech-to-text, not text-to-speech", response.data)
         response.close()
 
     def test_transcript_only_request_creates_pollable_job(self):

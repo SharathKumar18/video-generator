@@ -9,14 +9,18 @@
       body { max-width: 1100px; margin: 32px auto; padding: 0 20px; color: #172033; }
       h1, h2 { color: #14365d; }
       .callout { padding: 14px 18px; border-left: 4px solid #2878c8; background: #eef6ff; }
-      .diagram { overflow-x: auto; margin: 24px 0; padding: 16px; border: 1px solid #cbd5e1; border-radius: 12px; }
-      svg { min-width: 900px; width: 100%; height: auto; }
-      .node { fill: #f1f7ff; stroke: #2878c8; stroke-width: 2; rx: 12; }
-      .node-model { fill: #f3f8e9; stroke: #54832a; stroke-width: 2; rx: 12; }
-      .node-output { fill: #fff5e8; stroke: #c07816; stroke-width: 2; rx: 12; }
-      .arrow { stroke: #516174; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
-      .node-title { font-size: 15px; font-weight: 700; fill: #172033; }
-      .node-copy { font-size: 12px; fill: #334155; }
+      .flow { margin: 24px 0; padding: 16px; border: 1px solid #cbd5e1; border-radius: 12px; }
+      .flow-track { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 8px 2px 14px; }
+      .flow-step { flex: 1 0 145px; min-height: 100px; padding: 12px; border: 1px solid #8bb9e7; border-radius: 10px; background: #f1f7ff; }
+      .flow-step.audio { border-color: #9ab77a; background: #f3f8e9; }
+      .flow-step.output { border-color: #dda960; background: #fff5e8; }
+      .flow-step strong { display: block; margin-bottom: 6px; }
+      .flow-arrow { align-self: center; flex: 0 0 auto; color: #64748b; font-size: 1.4rem; font-weight: 700; }
+      .flow-branches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 8px 0 16px; }
+      .flow-branch { padding: 14px; border: 1px solid #9ab77a; border-radius: 10px; background: #f3f8e9; }
+      .flow-branch.remote { border-color: #c1a0e8; background: #f8f3ff; }
+      .flow-branch strong { display: block; margin-bottom: 5px; }
+      .flow-caption { margin: 6px 0 0; color: #64748b; font-size: .9rem; }
       table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; }
       th, td { padding: 10px; border: 1px solid #cbd5e1; text-align: left; vertical-align: top; }
       th { background: #eef3f8; }
@@ -28,80 +32,87 @@
         th, td { border-color: #475569; }
         th, code { background: #1f2937; }
         .callout { background: #172554; }
-        .diagram { border-color: #475569; }
+        .flow { border-color: #475569; }
+        .flow-step { background: #172554; border-color: #3b82f6; }
+        .flow-step.audio, .flow-branch { background: #1d2b1d; border-color: #5e8b3c; }
+        .flow-step.output { background: #2e261a; border-color: #c07816; }
+        .flow-branch.remote { background: #2a1e39; border-color: #8b5fc0; }
+        .flow-caption, .flow-arrow { color: #94a3b8; }
       }
+      @media (max-width: 700px) { .flow-branches { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
     <h1>Video Generator: flow, models, and libraries</h1>
-    <p>This page documents the three generation modes, local narration voices, animated visuals, and what the app does after you submit a job.</p>
+    <p>This page documents each of the four generation flows, the local speech model, optional AI illustrations, and what happens after you submit a job.</p>
 
     <div class="callout">
-      <strong>No hosted AI API is called.</strong> Piper runs locally for speech. Stick-figure scenes are drawn with Pillow and require no image-generation model. Piper voice weights download from Hugging Face on first use.
+      <strong>Speech always runs locally with Piper.</strong> Transcript-only visuals use local Pillow drawings when no Gemini key is entered. Gemini image generation is optional and runs only when a key and the user's consent are supplied. Whisper is not a text-to-speech model; it recognizes speech in audio.
     </div>
 
-    <h2>End-to-end flow</h2>
-    <div class="diagram">
-      <svg viewBox="0 0 1120 460" role="img" aria-labelledby="diagram-title diagram-desc">
-        <title id="diagram-title">Video generation processing flow</title>
-        <desc id="diagram-desc">A browser sends a transcript, optimized images, or video in 8 MB chunks to Flask. Piper creates narration. The selected visual mode prepares scenes. FFmpeg matches visuals to the narration and writes the video and GIF. The browser polls for logs and displays downloads.</desc>
-        <defs>
-          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L9,3 z" fill="#516174"></path>
-          </marker>
-        </defs>
-        <rect class="node" x="20" y="175" width="170" height="100"></rect>
-        <text class="node-title" x="38" y="202">1. Browser form</text>
-        <text class="node-copy" x="38" y="226">Transcript + mode</text>
-        <text class="node-copy" x="38" y="246">Images or 8 MB video chunks</text>
-
-        <rect class="node" x="235" y="175" width="180" height="100"></rect>
-        <text class="node-title" x="253" y="202">2. Flask job</text>
-        <text class="node-copy" x="253" y="226">Validates / assembles uploads</text>
-        <text class="node-copy" x="253" y="246">Queues job; returns ID</text>
-
-        <rect class="node-model" x="465" y="35" width="190" height="95"></rect>
-        <text class="node-title" x="483" y="63">Piper TTS</text>
-        <text class="node-copy" x="483" y="86">English / Hindi, male / female</text>
-        <text class="node-copy" x="483" y="106">Transcript → WAV</text>
-
-        <rect class="node" x="465" y="175" width="190" height="100"></rect>
-        <text class="node-title" x="483" y="202">3. Visual mode</text>
-        <text class="node-copy" x="483" y="226">Animated figures, images,</text>
-        <text class="node-copy" x="483" y="246">or uploaded video</text>
-
-        <rect class="node-model" x="465" y="330" width="190" height="95"></rect>
-        <text class="node-title" x="483" y="358">Pillow drawings</text>
-        <text class="node-copy" x="483" y="381">Animated poses, props, effects</text>
-        <text class="node-copy" x="483" y="401">→ local stick figures</text>
-
-        <rect class="node" x="710" y="175" width="180" height="100"></rect>
-        <text class="node-title" x="728" y="202">4. FFmpeg</text>
-        <text class="node-copy" x="728" y="226">Fit or fill selected profile</text>
-        <text class="node-copy" x="728" y="246">Sync visuals to WAV</text>
-
-        <rect class="node-output" x="945" y="175" width="155" height="100"></rect>
-        <text class="node-title" x="963" y="202">5. Outputs</text>
-        <text class="node-copy" x="963" y="226">MP4 + looping GIF</text>
-        <text class="node-copy" x="963" y="246">WAV download</text>
-
-        <path class="arrow" d="M190 225 H230"></path>
-        <path class="arrow" d="M415 205 C440 205 440 83 460 83"></path>
-        <path class="arrow" d="M415 225 H460"></path>
-        <path class="arrow" d="M560 130 V170"></path>
-        <path class="arrow" d="M560 275 V325"></path>
-        <path class="arrow" d="M655 225 H705"></path>
-        <path class="arrow" d="M890 225 H940"></path>
-      </svg>
+    <h2>Flow 1: Transcript only</h2>
+    <div class="flow" aria-label="Transcript-only generation flow">
+      <div class="flow-track">
+        <div class="flow-step"><strong>Transcript</strong>Paste narration text and choose global settings.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Flask job</strong>Validate settings and queue a background job.</div><span class="flow-arrow">→</span>
+        <div class="flow-step audio"><strong>Local Piper TTS</strong>Create a WAV from the transcript as written.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Choose visual path</strong>Is a Gemini key supplied with consent?</div>
+      </div>
+      <div class="flow-branches">
+        <div class="flow-branch"><strong>No key: local visuals</strong>Pillow draws animated stick-figure scenes. No image model, API key, or transcript upload to a visual provider is needed.</div>
+        <div class="flow-branch remote"><strong>Key + consent: Gemini images</strong>Send transcript and optional character reference to Gemini. Generate six images, or eight with a character reference; Pillow animates and loops the images locally.</div>
+      </div>
+      <div class="flow-track">
+        <div class="flow-step"><strong>Scene loops</strong>Repeat visuals across the narration duration.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>FFmpeg</strong>Encode the selected format and synchronize narration.</div><span class="flow-arrow">→</span>
+        <div class="flow-step output"><strong>Outputs</strong>Full MP4, 15-second GIF preview, and WAV narration.</div>
+      </div>
+      <p class="flow-caption">Gemini is an optional hosted image-generation model; it does not generate speech or GIF animation. A key and explicit consent are required.</p>
     </div>
 
-    <h2>Home-screen generation modes</h2>
+    <h2>Flow 2: Transcript + images</h2>
+    <div class="flow" aria-label="Transcript and images generation flow">
+      <div class="flow-track">
+        <div class="flow-step"><strong>Inputs</strong>Transcript and ordered still images.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Browser</strong>Resize images and upload them with the transcript.</div><span class="flow-arrow">→</span>
+        <div class="flow-step audio"><strong>Local Piper TTS</strong>Create the narration WAV.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Image timing</strong>Normalize Fit/Fill and assign equal scene durations.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>FFmpeg</strong>Compose slides, narration, and chosen profile.</div><span class="flow-arrow">→</span>
+        <div class="flow-step output"><strong>Outputs</strong>MP4, GIF preview, and WAV.</div>
+      </div>
+    </div>
+
+    <h2>Flow 3: Existing audio + images</h2>
+    <div class="flow" aria-label="Existing audio and images generation flow">
+      <div class="flow-track">
+        <div class="flow-step"><strong>Inputs</strong>Audio track and ordered images; transcript not required.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Chunked upload</strong>Send large audio in sequential 8 MB chunks.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Duration</strong>Read audio length with ffprobe (or FFmpeg fallback).</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Image sequence</strong>Cycle images, apply gentle zoom, and allocate scene timing.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>FFmpeg</strong>Encode the visual track to the exact audio duration.</div><span class="flow-arrow">→</span>
+        <div class="flow-step output"><strong>Outputs</strong>MP4, GIF preview, and original uploaded audio.</div>
+      </div>
+    </div>
+
+    <h2>Flow 4: Transcript + video</h2>
+    <div class="flow" aria-label="Transcript and video generation flow">
+      <div class="flow-track">
+        <div class="flow-step"><strong>Inputs</strong>Transcript and uploaded video.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>Chunked upload</strong>Send video in sequential 8 MB chunks; Flask assembles it.</div><span class="flow-arrow">→</span>
+        <div class="flow-step audio"><strong>Local Piper TTS</strong>Create WAV narration and measure its duration.</div><span class="flow-arrow">→</span>
+        <div class="flow-step"><strong>FFmpeg</strong>Fit/fill, loop or trim video, and replace its source audio.</div><span class="flow-arrow">→</span>
+        <div class="flow-step output"><strong>Outputs</strong>Narrated MP4, GIF preview, and WAV.</div>
+      </div>
+    </div>
+
+    <h2>Flow inputs at a glance</h2>
     <table>
       <thead><tr><th>Mode</th><th>Inputs</th><th>Visual processing</th><th>Audio</th></tr></thead>
       <tbody>
-        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws and animates up to eight scenes in transcript order. Each scene cycles through three actions, such as thinking → waving → celebrating or pushing → climbing → celebrating. Characters use bolder limbs and rounded joints; keyword-selected props include ideas, clocks, steps, obstacles, teammates, and celebration effects. The rendered MP4 also produces a looping GIF.</td><td>Piper-generated narration.</td></tr>
-        <tr><td>Transcript + image sequence</td><td>Transcript and multiple images</td><td>Images are ordered by selection, fitted or cropped as selected, and allotted equal portions of narration duration.</td><td>Piper-generated narration.</td></tr>
-        <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg decodes the uploaded footage, fits or crops it to the selected profile, then loops or trims it to match narration.</td><td>Original video sound is replaced with Piper narration.</td></tr>
+        <tr><td>Transcript only</td><td>Transcript; optional Gemini key and character reference image</td><td>No key: local animated stick figures. With key and consent: six Gemini images, or eight with a character reference, animated locally and looped.</td><td>Local Piper narration.</td></tr>
+        <tr><td>Transcript + image sequence</td><td>Transcript and ordered images</td><td>Pillow normalizes images; FFmpeg times the sequence to the narration.</td><td>Local Piper narration.</td></tr>
+        <tr><td>Existing audio + images</td><td>Audio track and ordered images</td><td>Images cycle with gentle zoom motion; the MP4 duration matches the uploaded audio.</td><td>Uses the uploaded audio. No transcript or TTS model required.</td></tr>
+        <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg fits or crops the uploaded footage, then loops or trims it to the narration duration.</td><td>Original video sound is replaced with local Piper narration.</td></tr>
       </tbody>
     </table>
 
@@ -124,8 +135,13 @@
         </tr>
         <tr>
           <td>Pillow</td>
-          <td>Transcript-only mode draws animated multi-frame GIF scenes, including backgrounds, facial expressions, moving limbs, motion, and keyword-selected props/effects.</td>
-          <td>Runs locally; no visual-generation model is downloaded and no transcript is sent to a hosted AI service. Scenes are illustrative rather than a full semantic translation of the narration.</td>
+          <td>Normalizes uploaded images and draws or animates looping scenes for transcript-only videos when Gemini is not selected.</td>
+          <td>Runs locally. The no-key stick-figure fallback does not send the transcript to an image provider.</td>
+        </tr>
+        <tr>
+          <td>Gemini 3.1 Flash Lite Image (optional)</td>
+          <td>Generates still illustrations for transcript-only videos; Pillow adds motion and FFmpeg assembles the video.</td>
+          <td>Requires the user's per-job key and explicit consent. Sends the transcript and optional character reference to Google. The current app creates six scenes, or eight with a character reference. This image model is not a TTS model.</td>
         </tr>
         <tr>
           <td>Flask</td>
@@ -144,7 +160,12 @@
         </tr>
       </tbody>
     </table>
-    <p>OpenAI, Claude, and Gemini APIs are not used by this project. The app does not send transcript text to a hosted AI provider and does not require an API key.</p>
+    <h2>Could a Hugging Face model replace Gemini?</h2>
+    <p>Yes, but the listed models are large diffusion/flow image generators, not small language models. The collection includes <a href="https://huggingface.co/black-forest-labs/FLUX.1-schnell">FLUX.1 [schnell]</a> (12B parameters, 1–4 inference steps, Apache 2.0 after accepting its Hugging Face access conditions), <a href="https://huggingface.co/fal/AuraFlow-v0.3">AuraFlow v0.3</a> (7B, beta; its example uses CUDA and 50 steps), and <a href="https://huggingface.co/TencentARC/PhotoMaker-V2">PhotoMaker V2</a> (a character-identity adapter that needs an SDXL base model, rather than a standalone generator). Review each model's current card and license before use.</p>
+    <p>The current Render Docker image is a CPU-oriented Python image with no PyTorch, Diffusers, or GPU. Downloading and running 7B–12B image models there would be slow or exceed its available memory. To use one without a hosted model key, run the model on a machine with a suitable GPU and install its weights locally. Hugging Face Inference Providers can run models remotely, but require a Hugging Face token and are pay-as-you-go. The app does not currently integrate these Hugging Face image models.</p>
+
+    <h2>Whisper is speech-to-text, not text-to-speech</h2>
+    <p><a href="https://github.com/openai/whisper">Whisper</a> recognizes speech and produces text (ASR). It cannot turn a transcript into spoken audio. This app's Piper TTS remains the appropriate local model for transcript → narration. Whisper could be added separately for an audio → transcript feature; it is not a replacement for Piper.</p>
 
     <h2>What happens after Generate</h2>
     <ol>
@@ -152,8 +173,8 @@
       <li>Flask validates the transcript and settings, stores the media, creates a background job, and returns its ID.</li>
       <li>The page polls the job status and displays timestamped server-side log entries; status/logs are also saved to disk for recovery.</li>
       <li>Piper synthesizes the narration. The app reads its duration with ffprobe.</li>
-      <li>The selected visual mode animates stick-figure scenes or normalizes uploaded media; FFmpeg fits visuals to the narration duration and selected profile.</li>
-      <li>FFmpeg writes the full-length MP4 at 10 fps for transcript/image modes, then creates a 15-second looping GIF preview (4 fps, 360 pixels wide) to keep GIF rendering and storage manageable. Uploaded-video mode remains 30 fps. The page shows previews and download links.</li>
+      <li>The selected visual mode draws local scenes, optionally requests Gemini still illustrations, or prepares uploaded images/video. Existing-audio mode uses ffprobe to time visuals to the audio.</li>
+      <li>FFmpeg encodes the selected profile and creates a 15-second looping GIF preview (4 fps, 360 pixels wide). Audio-led image videos use 24 fps; uploaded-video mode uses 30 fps. The page shows previews and download links.</li>
     </ol>
 
     <h2>Hosted deployment</h2>
