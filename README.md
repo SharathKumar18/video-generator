@@ -52,10 +52,8 @@ Generated files are kept in `output/<job-id>/`. Uploaded source media is kept in
 
 ## Use it online
 
-The live app is available at **[video-generator-5m4q.onrender.com](https://video-generator-5m4q.onrender.com/)**. Its [generation flow and model guide](https://video-generator-5m4q.onrender.com/docs) is also online.
+The live app is available at **[video-generator-5m4q.onrender.com](https://video-generator-5m4q.onrender.com/)**.
 
 The project includes a Render deployment blueprint. To create another hosted service, open [Deploy on Render](https://render.com/deploy?repo=https://github.com/SharathKumar18/video-generator), sign in, and apply the `render.yaml` blueprint.
 
-The blueprint uses Render's free service and sets the total video upload limit to 512 MB. Video chunks are sent in 8 MB requests. Free-service storage is temporary: uploaded and generated files can disappear after restarts or redeploys, and service capacity may limit the practical video size. For durable files or larger workloads, use a paid instance with persistent storage and set `DATA_DIR` to the disk's mount path. The app has no user login, so anyone with the public service URL can submit jobs. The processing guide and flowchart are served at `/docs`.
-
-See [the flow and model guide](docs/video-generation-flow.html) for the full processing diagram, model/library roles, animation details, mode behavior, output profiles, hosting notes, and licensing.
+The blueprint uses Render's free service and sets the total video upload limit to 512 MB. Video chunks are sent in 8 MB requests. Free-service storage is temporary: uploaded and generated files can disappear after restarts or redeploys, and service capacity may limit the practical video size. For durable files or larger workloads, use a paid instance with persistent storage and set `DATA_DIR` to the disk's mount path. The app has no user login, so anyone with the public service URL can submit jobs.

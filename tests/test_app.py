@@ -40,7 +40,7 @@ class VideoGeneratorTest(unittest.TestCase):
         self.assertIn(b'value="hi">Hindi', response.data)
         self.assertIn(b'value="fill">Fill', response.data)
         self.assertIn(b"id=\"generation-log\"", response.data)
-        self.assertIn(b'href="/docs"', response.data)
+        self.assertNotIn(b'href="/docs"', response.data)
 
     def test_processing_guide_is_available_from_the_app(self):
         response = self.client.get("/docs")
