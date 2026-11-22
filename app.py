@@ -461,7 +461,7 @@ def generate_stickman_animations(
     frame_count = max(20, min(40, round(scene_duration * fps)))
     paths = []
     scale = min(width, height)
-    stroke = max(5, round(scale * 0.012))
+    stroke = max(7, round(scale * 0.018))
     head_radius = max(14, round(scale * 0.045))
     figure_height = round(min(height * 0.40, width * 0.30))
     captions_font = ImageFont.load_default(size=max(18, round(scale * 0.035)))
@@ -486,8 +486,20 @@ def generate_stickman_animations(
         else:
             action = ("wave", "idea", "growth", "challenge", "success")[scene_index % 5]
 
+        scene_action = action
+        animation_sequences = {
+            "challenge": ("challenge", "growth", "success"),
+            "growth": ("growth", "success", "wave"),
+            "idea": ("idea", "wave", "success"),
+            "success": ("wave", "success", "wave"),
+            "team": ("team", "wave", "success"),
+            "time": ("time", "challenge", "success"),
+            "wave": ("wave", "idea", "success"),
+        }
+        action_sequence = animation_sequences[scene_action]
         frames = []
         for frame_index in range(frame_count):
+            action = action_sequence[min(2, frame_index * 3 // frame_count)]
             phase = 2 * math.pi * frame_index / frame_count
             image = Image.new("RGB", (width, height), "#eaf4ff")
             draw = ImageDraw.Draw(image)
@@ -656,7 +668,8 @@ def generate_stickman_animations(
         )
         paths.append(animation_path)
         log(
-            f"Animated scene {scene_index + 1} of {len(scenes)} ({action}).",
+            f"Animated scene {scene_index + 1} of {len(scenes)} "
+            f"with {', '.join(action_sequence)} motions.",
             27 + round(16 * (scene_index + 1) / len(scenes)),
         )
     return paths

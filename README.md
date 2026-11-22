@@ -28,7 +28,7 @@ python3 -m pip install -r requirements.txt
 python3 app.py
 ```
 
-Open `http://localhost:5000`, paste a transcript, choose English or Hindi narration, a voice gender, delivery pace, generation mode, and social video format, and submit. Narration uses the transcript as written; the app does not translate it. Piper voice weights download locally on first use. Transcript-only scenes animate in sequence with poses, expressions, props, and background effects; they are drawn locally without an image-generation model or paid AI API.
+Open `http://localhost:5000`, paste a transcript, choose English or Hindi narration, a voice gender, delivery pace, generation mode, and social video format, and submit. Narration uses the transcript as written; the app does not translate it. Piper voice weights download locally on first use. Transcript-only scenes cycle through multiple actions, with bolder stick figures, expressions, props, and background effects; they are drawn locally without an image-generation model or paid AI API. The app produces an MP4 and looping GIF.
 
 Hindi Piper voices are licensed CC BY-NC-SA 4.0 and are for non-commercial use only. Do not select them for monetized content unless you have separate permission. The English LJSpeech and Norman voice datasets are public domain. The pace presets change speaking speed, not emotional expression.
 

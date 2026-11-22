@@ -99,7 +99,7 @@
     <table>
       <thead><tr><th>Mode</th><th>Inputs</th><th>Visual processing</th><th>Audio</th></tr></thead>
       <tbody>
-        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws and animates up to eight scenes in transcript order. Poses include waving, thinking, walking, jumping, and pushing; keyword-selected props include ideas, clocks, steps, obstacles, teammates, and celebration effects.</td><td>Piper-generated narration.</td></tr>
+        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws and animates up to eight scenes in transcript order. Each scene cycles through three actions, such as thinking → waving → celebrating or pushing → climbing → celebrating. Characters use bolder limbs and rounded joints; keyword-selected props include ideas, clocks, steps, obstacles, teammates, and celebration effects. The rendered MP4 also produces a looping GIF.</td><td>Piper-generated narration.</td></tr>
         <tr><td>Transcript + image sequence</td><td>Transcript and multiple images</td><td>Images are ordered by selection, fitted or cropped as selected, and allotted equal portions of narration duration.</td><td>Piper-generated narration.</td></tr>
         <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg decodes the uploaded footage, fits or crops it to the selected profile, then loops or trims it to match narration.</td><td>Original video sound is replaced with Piper narration.</td></tr>
       </tbody>

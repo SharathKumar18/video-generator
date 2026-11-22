@@ -110,19 +110,21 @@ class VideoGeneratorTest(unittest.TestCase):
     def test_transcript_only_creates_rich_animated_scenes(self):
         work_dir = Path(self.temp_dir.name) / "animated-scenes"
         work_dir.mkdir()
+        messages = []
         animations = app.generate_stickman_animations(
             "First, develop an idea. Finally, celebrate success.",
             work_dir,
             640,
             360,
             4,
-            lambda _message, _progress: None,
+            lambda message, _progress: messages.append(message),
         )
 
         self.assertEqual(len(animations), 2)
         with app.Image.open(animations[0]) as animation:
             self.assertEqual(animation.size, (640, 360))
             self.assertGreater(animation.n_frames, 1)
+        self.assertIn("idea, wave, success motions", messages[1])
 
     def test_image_mode_requires_at_least_one_image(self):
         response = self.client.post(
