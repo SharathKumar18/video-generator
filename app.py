@@ -1615,9 +1615,6 @@ def generate():
             gemini_api_key,
             character_description,
             character_reference,
-            gemini_api_key,
-            character_description,
-            character_reference,
         ),
         daemon=True,
     ).start()

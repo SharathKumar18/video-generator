@@ -187,7 +187,7 @@ class VideoGeneratorTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Upload an audio file", response.json["error"])
 
-    def test_audio_image_mode_accepts_chunked_audio_and_schedules_job(self):
+    def test_audio_image_mode_starts_worker_with_chunked_audio(self):
         original_chunk_size = app.VIDEO_CHUNK_BYTES
         app.VIDEO_CHUNK_BYTES = 5
         try:
@@ -218,10 +218,28 @@ class VideoGeneratorTest(unittest.TestCase):
                 )
 
             self.assertEqual(response.status_code, 202)
-            audio_path = thread_class.call_args.kwargs["args"][9]
+            thread_args = thread_class.call_args.kwargs["args"]
+            self.assertEqual(len(thread_args), 14)
+            audio_path = thread_args[9]
             self.assertEqual(audio_path.suffix, ".mp3")
             self.assertEqual(audio_path.read_bytes(), b"audio123")
             self.assertNotIn(upload_id, app.upload_sessions)
+
+            work_dir = thread_args[10]
+            with patch.object(
+                app,
+                "create_assets",
+                return_value=(
+                    work_dir / "video.mp4",
+                    work_dir / "slideshow.gif",
+                    audio_path,
+                ),
+            ) as create_assets:
+                app.generate_job(*thread_args)
+
+            create_assets.assert_called_once()
+            status = self.client.get(f"/jobs/{thread_args[0]}")
+            self.assertEqual(status.json["status"], "complete")
         finally:
             app.VIDEO_CHUNK_BYTES = original_chunk_size
 
