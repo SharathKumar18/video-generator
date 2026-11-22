@@ -34,7 +34,7 @@
   </head>
   <body>
     <h1>Video Generator: flow, models, and libraries</h1>
-    <p>This page documents the three generation modes, local narration voices, and what the app does after you submit a job.</p>
+    <p>This page documents the three generation modes, local narration voices, animated visuals, and what the app does after you submit a job.</p>
 
     <div class="callout">
       <strong>No hosted AI API is called.</strong> Piper runs locally for speech. Stick-figure scenes are drawn with Pillow and require no image-generation model. Piper voice weights download from Hugging Face on first use.
@@ -44,7 +44,7 @@
     <div class="diagram">
       <svg viewBox="0 0 1120 460" role="img" aria-labelledby="diagram-title diagram-desc">
         <title id="diagram-title">Video generation processing flow</title>
-        <desc id="diagram-desc">A browser submits a transcript and optional images or video to Flask. Piper creates narration. The selected visual mode prepares scenes. FFmpeg matches visuals to the narration and writes the video and GIF. The browser polls for logs and displays downloads.</desc>
+        <desc id="diagram-desc">A browser sends a transcript, optimized images, or video in 8 MB chunks to Flask. Piper creates narration. The selected visual mode prepares scenes. FFmpeg matches visuals to the narration and writes the video and GIF. The browser polls for logs and displays downloads.</desc>
         <defs>
           <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
             <path d="M0,0 L0,6 L9,3 z" fill="#516174"></path>
@@ -53,12 +53,12 @@
         <rect class="node" x="20" y="175" width="170" height="100"></rect>
         <text class="node-title" x="38" y="202">1. Browser form</text>
         <text class="node-copy" x="38" y="226">Transcript + mode</text>
-        <text class="node-copy" x="38" y="246">Social format + media</text>
+        <text class="node-copy" x="38" y="246">Images or 8 MB video chunks</text>
 
         <rect class="node" x="235" y="175" width="180" height="100"></rect>
         <text class="node-title" x="253" y="202">2. Flask job</text>
-        <text class="node-copy" x="253" y="226">Validates inputs</text>
-        <text class="node-copy" x="253" y="246">Returns job ID (202)</text>
+        <text class="node-copy" x="253" y="226">Validates / assembles uploads</text>
+        <text class="node-copy" x="253" y="246">Queues job; returns ID</text>
 
         <rect class="node-model" x="465" y="35" width="190" height="95"></rect>
         <text class="node-title" x="483" y="63">Piper TTS</text>
@@ -67,12 +67,12 @@
 
         <rect class="node" x="465" y="175" width="190" height="100"></rect>
         <text class="node-title" x="483" y="202">3. Visual mode</text>
-        <text class="node-copy" x="483" y="226">Stick-figure scenes, images,</text>
+        <text class="node-copy" x="483" y="226">Animated figures, images,</text>
         <text class="node-copy" x="483" y="246">or uploaded video</text>
 
         <rect class="node-model" x="465" y="330" width="190" height="95"></rect>
         <text class="node-title" x="483" y="358">Pillow drawings</text>
-        <text class="node-copy" x="483" y="381">Narrative keyword scenes</text>
+        <text class="node-copy" x="483" y="381">Animated poses, props, effects</text>
         <text class="node-copy" x="483" y="401">→ local stick figures</text>
 
         <rect class="node" x="710" y="175" width="180" height="100"></rect>
@@ -99,7 +99,7 @@
     <table>
       <thead><tr><th>Mode</th><th>Inputs</th><th>Visual processing</th><th>Audio</th></tr></thead>
       <tbody>
-        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws up to eight stick-figure scenes in transcript order; simple narrative keywords select scene props and poses.</td><td>Piper-generated narration.</td></tr>
+        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws and animates up to eight scenes in transcript order. Poses include waving, thinking, walking, jumping, and pushing; keyword-selected props include ideas, clocks, steps, obstacles, teammates, and celebration effects.</td><td>Piper-generated narration.</td></tr>
         <tr><td>Transcript + image sequence</td><td>Transcript and multiple images</td><td>Images are ordered by selection, fitted or cropped as selected, and allotted equal portions of narration duration.</td><td>Piper-generated narration.</td></tr>
         <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg decodes the uploaded footage, fits or crops it to the selected profile, then loops or trims it to match narration.</td><td>Original video sound is replaced with Piper narration.</td></tr>
       </tbody>
@@ -124,7 +124,7 @@
         </tr>
         <tr>
           <td>Pillow</td>
-          <td>Transcript-only mode draws stick-figure scenes with props selected from simple English/Hindi narrative keywords.</td>
+          <td>Transcript-only mode draws animated multi-frame GIF scenes, including backgrounds, facial expressions, moving limbs, motion, and keyword-selected props/effects.</td>
           <td>Runs locally; no visual-generation model is downloaded and no transcript is sent to a hosted AI service. Scenes are illustrative rather than a full semantic translation of the narration.</td>
         </tr>
         <tr>
@@ -134,8 +134,8 @@
         </tr>
         <tr>
           <td>Browser Canvas + XMLHttpRequest</td>
-          <td>Resizes still images before upload, preserving the full image in Fit mode or cropping in Fill mode, and reports upload percentage.</td>
-          <td>Runs in the browser; does not call an AI service.</td>
+          <td>Resizes still images before upload and reports progress. Videos are streamed to Flask in sequential 8 MB chunks, with a configurable total file-size limit.</td>
+          <td>Runs in the browser; does not call an AI service. Chunking keeps each request small but does not increase the host's available disk space.</td>
         </tr>
         <tr>
           <td>FFmpeg + ffprobe</td>
@@ -148,12 +148,15 @@
 
     <h2>What happens after Generate</h2>
     <ol>
-      <li>The browser optimizes selected still images using Fit or Fill and uploads the transcript and media.</li>
-      <li>Flask creates a background job and returns its ID.</li>
+      <li>The browser optimizes selected still images using Fit or Fill. Video files are split into sequential 8 MB chunks and assembled by Flask before generation.</li>
+      <li>Flask validates the transcript and settings, stores the media, creates a background job, and returns its ID.</li>
       <li>The page polls the job status and displays timestamped server-side log entries; status/logs are also saved to disk for recovery.</li>
       <li>Piper synthesizes the narration. The app reads its duration with ffprobe.</li>
-      <li>The selected visual mode draws stick figures or normalizes uploaded media; FFmpeg fits visuals to the narration duration and selected profile.</li>
+      <li>The selected visual mode animates stick-figure scenes or normalizes uploaded media; FFmpeg fits visuals to the narration duration and selected profile.</li>
       <li>FFmpeg writes an MP4 and a looping GIF preview (6 fps, 480 pixels wide). The page shows previews and download links.</li>
     </ol>
+
+    <h2>Hosted deployment</h2>
+    <p>The repository includes a Dockerfile and Render Blueprint. Use <a href="https://render.com/deploy?repo=https://github.com/SharathKumar18/video-generator">Deploy on Render</a> to create a hosted service; Render provides its URL after the first build. The Blueprint uses a free instance and caps each video at 512 MB. Uploads are chunked at 8 MB per request, but free-instance storage is temporary and limited. Use a paid instance with a persistent disk for durable outputs or larger workloads, and set <code>DATA_DIR</code> to the disk mount path. The public app has no user login; anyone with its URL can submit jobs.</p>
   </body>
 </html>

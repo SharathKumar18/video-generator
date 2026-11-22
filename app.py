@@ -4,6 +4,8 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -12,13 +14,14 @@ from typing import Callable
 from urllib.request import urlopen
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = BASE_DIR / "output"
-UPLOAD_DIR = BASE_DIR / "uploads"
-VOICE_DIR = BASE_DIR / "voices"
+DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", DATA_DIR / "output"))
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATA_DIR / "uploads"))
+VOICE_DIR = Path(os.environ.get("VOICE_DIR", DATA_DIR / "voices"))
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_MODELS = {
     "en_female": {
@@ -59,7 +62,12 @@ TONES = {
 }
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "250")) * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+MAX_VIDEO_UPLOAD_MB = int(
+    os.environ.get("MAX_VIDEO_UPLOAD_MB", os.environ.get("MAX_UPLOAD_MB", "2048"))
+)
+MAX_VIDEO_UPLOAD_BYTES = MAX_VIDEO_UPLOAD_MB * 1024 * 1024
+VIDEO_CHUNK_BYTES = 8 * 1024 * 1024
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
@@ -75,6 +83,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 jobs: dict[str, dict] = {}
 jobs_lock = Lock()
 generation_lock = Lock()
+upload_sessions: dict[str, dict] = {}
+upload_sessions_lock = Lock()
 
 def run(command: list[str]) -> None:
     if Path(command[0]).name == "ffmpeg":
@@ -425,6 +435,219 @@ def generate_stickman_images(
     return paths
 
 
+def generate_stickman_animations(
+    transcript: str,
+    work_dir: Path,
+    width: int,
+    height: int,
+    duration: float,
+    log: Callable[[str, int], None],
+) -> list[Path]:
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?।])\s+", transcript)
+        if part.strip()
+    ] or [transcript.strip()]
+    scene_count = min(8, len(sentences))
+    chunk_size = (len(sentences) + scene_count - 1) // scene_count
+    scenes = [
+        " ".join(sentences[index:index + chunk_size])
+        for index in range(0, len(sentences), chunk_size)
+    ]
+    log(f"Animating {len(scenes)} illustrated stick-figure scenes.", 25)
+
+    fps = 10
+    scene_duration = max(2, duration / len(scenes))
+    frame_count = max(20, min(40, round(scene_duration * fps)))
+    paths = []
+    scale = min(width, height)
+    stroke = max(4, round(scale * 0.009))
+    head_radius = max(14, round(scale * 0.045))
+    figure_height = round(min(height * 0.40, width * 0.30))
+    captions_font = ImageFont.load_default(size=max(18, round(scale * 0.035)))
+    small_font = ImageFont.load_default(size=max(14, round(scale * 0.022)))
+
+    for scene_index, sentence in enumerate(scenes):
+        lowered = sentence.casefold()
+        if any(word in lowered for word in ("challenge", "problem", "difficult", "obstacle", "fail", "मुश्किल", "समस्या", "चुनौती")):
+            action = "challenge"
+        elif any(word in lowered for word in ("team", "together", "help", "support", "साथ", "मदद", "टीम")):
+            action = "team"
+        elif any(word in lowered for word in ("idea", "think", "plan", "solution", "सोच", "विचार", "योजना")):
+            action = "idea"
+        elif any(word in lowered for word in ("grow", "growth", "learn", "improve", "progress", "बढ़", "सीख", "विकास")):
+            action = "growth"
+        elif any(word in lowered for word in ("goal", "success", "achieve", "win", "सफल", "लक्ष्य", "जीत")):
+            action = "success"
+        elif any(word in lowered for word in ("time", "deadline", "समय", "घड़ी")):
+            action = "time"
+        elif any(word in lowered for word in ("hello", "welcome", "wave", "namaste", "नमस्ते")):
+            action = "wave"
+        else:
+            action = ("wave", "idea", "growth", "challenge", "success")[scene_index % 5]
+
+        frames = []
+        for frame_index in range(frame_count):
+            phase = 2 * math.pi * frame_index / frame_count
+            image = Image.new("RGB", (width, height), "#eaf4ff")
+            draw = ImageDraw.Draw(image)
+            for y in range(0, height, max(1, height // 40)):
+                blend = y / max(1, height)
+                color = (
+                    round(219 - 15 * blend),
+                    round(238 - 5 * blend),
+                    round(255 - 1 * blend),
+                )
+                draw.rectangle((0, y, width, min(height, y + max(1, height // 40))), fill=color)
+
+            draw.ellipse(
+                (width * 0.77, height * 0.10, width * 0.88, height * 0.27),
+                fill="#fde68a",
+            )
+            cloud_x = width * (0.50 + 0.025 * math.sin(phase))
+            draw.ellipse((cloud_x, height * 0.20, cloud_x + width * 0.09, height * 0.27), fill="#ffffff")
+            draw.ellipse((cloud_x + width * 0.035, height * 0.16, cloud_x + width * 0.10, height * 0.27), fill="#ffffff")
+            draw.ellipse((width * 0.02, height * 0.66, width * 0.55, height * 0.91), fill="#bfdbfe")
+            draw.ellipse((width * 0.43, height * 0.64, width * 1.02, height * 0.92), fill="#a7f3d0")
+            baseline = round(height * 0.79)
+            draw.rectangle((0, baseline, width, height), fill="#d1fae5")
+            draw.line((0, baseline, width, baseline), fill="#86b9a2", width=max(2, stroke // 2))
+
+            panel = (width * 0.055, height * 0.045, width * 0.66, height * 0.23)
+            draw.rounded_rectangle(panel, radius=max(12, stroke * 3), fill="#ffffff", outline="#cbd5e1", width=2)
+            draw.text((panel[0] + width * 0.025, panel[1] + height * 0.025), f"SCENE {scene_index + 1:02d}", font=small_font, fill="#2563eb")
+            caption_lines = textwrap.wrap(sentence, width=max(20, int(width / 22)))[:2]
+            draw.multiline_text(
+                (panel[0] + width * 0.025, panel[1] + height * 0.075),
+                "\n".join(caption_lines),
+                font=captions_font,
+                fill="#172554",
+                spacing=max(3, stroke),
+            )
+
+            cx = round(width * (0.35 + (0.012 * math.sin(phase) if action == "challenge" else 0)))
+            bounce = abs(math.sin(phase)) * height * 0.025 if action in {"success", "growth"} else abs(math.sin(phase)) * height * 0.012
+            foot_y = round(baseline - bounce)
+            head_y = foot_y - figure_height
+            head_cx = cx
+            head_cy = head_y + head_radius
+            torso_top = head_y + head_radius * 2 + stroke
+            torso_bottom = foot_y - round(figure_height * 0.35)
+            arm_y = torso_top + round(figure_height * 0.17)
+            arm_reach = round(figure_height * 0.24)
+            torso = "#172554"
+
+            draw.ellipse(
+                (head_cx - head_radius, head_y, head_cx + head_radius, head_y + 2 * head_radius),
+                fill="#fff7ed",
+                outline=torso,
+                width=stroke,
+            )
+            draw.ellipse((head_cx - head_radius * 0.48, head_cy - head_radius * 0.12, head_cx - head_radius * 0.30, head_cy + head_radius * 0.06), fill=torso)
+            draw.ellipse((head_cx + head_radius * 0.30, head_cy - head_radius * 0.12, head_cx + head_radius * 0.48, head_cy + head_radius * 0.06), fill=torso)
+            if action == "success":
+                draw.arc((head_cx - head_radius * 0.35, head_cy, head_cx + head_radius * 0.35, head_cy + head_radius * 0.38), 0, 180, fill="#f97316", width=max(2, stroke // 2))
+            else:
+                draw.arc((head_cx - head_radius * 0.28, head_cy + head_radius * 0.05, head_cx + head_radius * 0.28, head_cy + head_radius * 0.35), 0, 180, fill="#f97316", width=max(2, stroke // 2))
+            draw.line((cx, torso_top, cx, torso_bottom), fill=torso, width=stroke)
+
+            if action == "success":
+                arms = [(cx - arm_reach, arm_y - arm_reach), (cx + arm_reach, arm_y - arm_reach)]
+            elif action == "challenge":
+                arms = [(cx + arm_reach, arm_y), (cx + arm_reach * 1.1, arm_y + stroke)]
+            elif action == "idea":
+                arms = [(cx - arm_reach, arm_y - arm_reach * 0.45), (cx + head_radius, head_cy + head_radius * 0.35)]
+            elif action == "team":
+                arms = [(cx - arm_reach, arm_y - arm_reach * 0.25), (cx + arm_reach, arm_y - arm_reach * 0.25)]
+            elif action == "time":
+                arms = [(cx - arm_reach, arm_y - arm_reach * 0.25), (cx + arm_reach, arm_y - arm_reach * 0.65)]
+            elif action == "wave":
+                wave_height = 0.35 + 0.6 * (0.5 + 0.5 * math.sin(phase * 2))
+                arms = [(cx - arm_reach, arm_y - round(arm_reach * wave_height)), (cx + arm_reach, arm_y - arm_reach * 0.25)]
+            else:
+                swing = round(math.sin(phase) * arm_reach * 0.65)
+                arms = [(cx - arm_reach, arm_y + swing), (cx + arm_reach, arm_y - swing)]
+            for hand_x, hand_y in arms:
+                elbow_x = round((cx + hand_x) / 2)
+                elbow_y = round((arm_y + hand_y) / 2 + (stroke * 2 if hand_x < cx else 0))
+                draw.line((cx, arm_y, elbow_x, elbow_y, hand_x, hand_y), fill=torso, width=stroke, joint="curve")
+                draw.ellipse((hand_x - stroke, hand_y - stroke, hand_x + stroke, hand_y + stroke), fill="#f97316")
+
+            leg_swing = math.sin(phase) * figure_height * 0.11 if action in {"growth", "challenge", "wave"} else math.sin(phase * 2) * figure_height * 0.035
+            for direction in (-1, 1):
+                knee_x = cx + round(direction * figure_height * 0.09 + leg_swing * direction)
+                knee_y = torso_bottom + round(figure_height * 0.17)
+                foot_x = cx + round(direction * figure_height * 0.18 + leg_swing * direction)
+                foot_y_leg = foot_y
+                draw.line((cx, torso_bottom, knee_x, knee_y, foot_x, foot_y_leg), fill=torso, width=stroke, joint="curve")
+                draw.line((foot_x, foot_y_leg, foot_x + round(figure_height * 0.07), foot_y_leg), fill=torso, width=stroke)
+
+            prop_x = round(width * 0.76)
+            prop_y = round(height * 0.50)
+            prop_size = round(min(width, height) * 0.10)
+            accent = "#f97316"
+            if action == "idea":
+                bob = round(math.sin(phase) * prop_size * 0.12)
+                draw.ellipse((prop_x - prop_size // 2, prop_y - prop_size + bob, prop_x + prop_size // 2, prop_y + bob), fill="#fef3c7", outline=accent, width=stroke)
+                draw.line((prop_x - prop_size // 4, prop_y + bob + stroke, prop_x + prop_size // 4, prop_y + bob + stroke), fill=accent, width=stroke)
+                for ray in range(8):
+                    angle = ray * math.pi / 4 + phase * 0.08
+                    x1 = prop_x + int(math.cos(angle) * prop_size * 0.65)
+                    y1 = prop_y - prop_size // 2 + bob + int(math.sin(angle) * prop_size * 0.65)
+                    x2 = prop_x + int(math.cos(angle) * prop_size * 0.90)
+                    y2 = prop_y - prop_size // 2 + bob + int(math.sin(angle) * prop_size * 0.90)
+                    draw.line((x1, y1, x2, y2), fill=accent, width=max(2, stroke // 2))
+            elif action == "challenge":
+                block_x = prop_x - round(math.sin(phase) * prop_size * 0.12)
+                draw.rounded_rectangle((block_x - prop_size, baseline - prop_size, block_x + prop_size, baseline), radius=stroke, fill="#fb923c", outline="#c2410c", width=stroke)
+                draw.line((block_x, baseline - prop_size * 0.75, block_x - prop_size * 0.16, baseline - prop_size * 0.35, block_x + prop_size * 0.15, baseline - prop_size * 0.12), fill="#7c2d12", width=max(2, stroke // 2))
+            elif action == "growth":
+                for step in range(4):
+                    x1 = prop_x - prop_size + step * prop_size // 2
+                    y1 = baseline - step * prop_size // 3
+                    draw.rectangle((x1, y1, x1 + prop_size // 2, baseline), fill="#60a5fa")
+                draw.line((prop_x + prop_size, baseline - prop_size, prop_x + prop_size, baseline - prop_size * 2), fill="#2563eb", width=stroke)
+                draw.polygon(((prop_x + prop_size, baseline - prop_size * 2), (prop_x + prop_size * 2, baseline - prop_size * 2 + stroke * 2), (prop_x + prop_size, baseline - prop_size * 2 + stroke * 4)), fill=accent)
+            elif action == "success":
+                for star in range(7):
+                    sx = round(width * (0.58 + ((star * 37 + frame_index * 11) % 35) / 100))
+                    sy = round(height * (0.30 + ((star * 23 + frame_index * 7) % 35) / 100))
+                    radius = max(3, stroke * (1 if star % 2 else 2))
+                    draw.ellipse((sx - radius, sy - radius, sx + radius, sy + radius), fill=("#fbbf24", "#fb7185", "#38bdf8")[star % 3])
+                draw.rounded_rectangle((prop_x - prop_size, prop_y, prop_x + prop_size, prop_y + prop_size), radius=stroke, fill="#fbbf24", outline="#d97706", width=stroke)
+            elif action == "team":
+                other_x = round(width * 0.52)
+                other_head = head_radius * 2 // 3
+                other_top = baseline - figure_height * 0.76
+                draw.ellipse((other_x - other_head, other_top, other_x + other_head, other_top + other_head * 2), fill="#fef3c7", outline="#2563eb", width=stroke)
+                draw.line((other_x, other_top + other_head * 2, other_x, baseline - figure_height * 0.20), fill="#2563eb", width=stroke)
+                draw.line((other_x, baseline - figure_height * 0.20, other_x - other_head, baseline), fill="#2563eb", width=stroke)
+                draw.line((other_x, baseline - figure_height * 0.20, other_x + other_head, baseline), fill="#2563eb", width=stroke)
+                draw.line((other_x, other_top + other_head * 2 + stroke, cx - arm_reach, arm_y), fill="#2563eb", width=stroke)
+            elif action == "time":
+                draw.ellipse((prop_x - prop_size, prop_y - prop_size, prop_x + prop_size, prop_y + prop_size), fill="#ffffff", outline="#2563eb", width=stroke)
+                hand_angle = phase - math.pi / 2
+                draw.line((prop_x, prop_y, prop_x + int(math.cos(hand_angle) * prop_size * 0.62), prop_y + int(math.sin(hand_angle) * prop_size * 0.62)), fill=accent, width=stroke)
+
+            frames.append(image)
+
+        animation_path = work_dir / f"stickman-animation-{scene_index:03d}.gif"
+        frames[0].save(
+            animation_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=1000 // fps,
+            loop=0,
+            optimize=True,
+        )
+        paths.append(animation_path)
+        log(
+            f"Animated scene {scene_index + 1} of {len(scenes)} ({action}).",
+            27 + round(16 * (scene_index + 1) / len(scenes)),
+        )
+    return paths
+
+
 def frame_filter(width: int, height: int, layout: str) -> str:
     if layout == "fill":
         return (
@@ -487,7 +710,14 @@ def create_assets(
     log(f"Output profile: {output_format['label']} ({width}x{height}).", 23)
 
     if mode == "transcript_only":
-        image_paths = generate_stickman_images(transcript, work_dir, width, height, log)
+        image_paths = generate_stickman_animations(
+            transcript,
+            work_dir,
+            width,
+            height,
+            audio_duration,
+            log,
+        )
 
     if mode == "video" and video_path is not None:
         log("Using the uploaded video as the visual track and replacing its original audio.", 45)
@@ -527,10 +757,13 @@ def create_assets(
         normalized_images = []
         for index, image_path in enumerate(image_paths):
             progress = 46 + round(8 * index / len(image_paths))
-            log(f"Resizing image {index + 1} of {len(image_paths)} to {width}x{height}.", progress)
-            normalized_path = work_dir / f"image-{index:03d}.jpg"
-            normalize_image(image_path, normalized_path, width, height, layout)
-            normalized_images.append(normalized_path)
+            if mode == "transcript_only":
+                normalized_images.append(image_path)
+            else:
+                log(f"Resizing image {index + 1} of {len(image_paths)} to {width}x{height}.", progress)
+                normalized_path = work_dir / f"image-{index:03d}.jpg"
+                normalize_image(image_path, normalized_path, width, height, layout)
+                normalized_images.append(normalized_path)
 
         segment_duration = audio_duration / len(normalized_images)
         log(
@@ -539,18 +772,30 @@ def create_assets(
         )
         command = ["ffmpeg", "-y"]
         for image_path in normalized_images:
-            command.extend(
-                [
-                    "-loop",
-                    "1",
-                    "-framerate",
-                    "30",
-                    "-t",
-                    f"{segment_duration:.6f}",
-                    "-i",
-                    str(image_path),
-                ]
-            )
+            if mode == "transcript_only":
+                command.extend(
+                    [
+                        "-stream_loop",
+                        "-1",
+                        "-t",
+                        f"{segment_duration:.6f}",
+                        "-i",
+                        str(image_path),
+                    ]
+                )
+            else:
+                command.extend(
+                    [
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        "30",
+                        "-t",
+                        f"{segment_duration:.6f}",
+                        "-i",
+                        str(image_path),
+                    ]
+                )
 
         filters = []
         for index in range(len(normalized_images)):
@@ -666,15 +911,113 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/docs")
+def documentation():
+    return send_from_directory(BASE_DIR / "docs", "video-generation-flow.html")
+
+
 @app.errorhandler(413)
 def request_entity_too_large(_error):
-    max_upload_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    chunk_limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
     if request.accept_mimetypes.best == "application/json":
-        return jsonify(error=f"Combined upload exceeds the {max_upload_mb} MB server limit."), 413
+        return jsonify(
+            error=(
+                f"One upload request exceeds the {chunk_limit_mb} MB limit. "
+                "Video uploads are sent in 8 MB chunks; try again or choose a smaller file."
+            )
+        ), 413
     return render_template(
         "upload_too_large.html",
-        max_upload_mb=max_upload_mb,
+        max_upload_mb=chunk_limit_mb,
     ), 413
+
+
+def expire_upload_sessions() -> None:
+    expired: list[dict] = []
+    now = time.monotonic()
+    with upload_sessions_lock:
+        for upload_id, session in list(upload_sessions.items()):
+            if now - session["updated_at"] > 12 * 60 * 60:
+                expired.append(upload_sessions.pop(upload_id))
+    for session in expired:
+        session["temporary_path"].unlink(missing_ok=True)
+        if session["complete"]:
+            session["video_path"].unlink(missing_ok=True)
+
+
+@app.post("/uploads")
+def start_video_upload():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="Provide a video filename and size."), 400
+    filename = payload.get("filename")
+    size = payload.get("size")
+    if not isinstance(filename, str) or type(size) is not int or size <= 0:
+        return jsonify(error="Provide a valid video filename and size."), 400
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_VIDEO_EXTENSIONS:
+        return jsonify(error="Use an MP4, MOV, M4V, or WebM video."), 400
+    if size > MAX_VIDEO_UPLOAD_BYTES:
+        return jsonify(
+            error=f"Video exceeds the configured {MAX_VIDEO_UPLOAD_MB} MB upload limit."
+        ), 413
+
+    expire_upload_sessions()
+    upload_id = uuid.uuid4().hex
+    chunk_dir = UPLOAD_DIR / ".chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    temporary_path = chunk_dir / f"{upload_id}.part"
+    temporary_path.touch(exist_ok=False)
+    with upload_sessions_lock:
+        upload_sessions[upload_id] = {
+            "size": size,
+            "suffix": suffix,
+            "received": 0,
+            "updated_at": time.monotonic(),
+            "temporary_path": temporary_path,
+            "video_path": UPLOAD_DIR / f"{upload_id}{suffix}",
+            "complete": False,
+        }
+    return jsonify(
+        upload_id=upload_id,
+        chunk_size=VIDEO_CHUNK_BYTES,
+        max_upload_mb=MAX_VIDEO_UPLOAD_MB,
+    ), 201
+
+
+@app.post("/uploads/<upload_id>/chunks/<int:chunk_index>")
+def append_video_upload_chunk(upload_id: str, chunk_index: int):
+    chunk = request.get_data(cache=False)
+    if not chunk:
+        return jsonify(error="The upload chunk is empty."), 400
+    if len(chunk) > VIDEO_CHUNK_BYTES:
+        return jsonify(error="Upload chunks must not exceed 8 MB."), 413
+    with upload_sessions_lock:
+        session = upload_sessions.get(upload_id)
+        if session is None:
+            return jsonify(error="Video upload session not found or expired."), 404
+        if session["complete"]:
+            return jsonify(error="This video upload is already complete."), 409
+        expected_index = session["received"] // VIDEO_CHUNK_BYTES
+        if chunk_index != expected_index:
+            return jsonify(
+                error=f"Expected upload chunk {expected_index}, received {chunk_index}."
+            ), 409
+        if session["received"] + len(chunk) > session["size"]:
+            return jsonify(error="Video upload exceeded its declared file size."), 400
+        with session["temporary_path"].open("ab") as upload_file:
+            upload_file.write(chunk)
+        session["received"] += len(chunk)
+        session["updated_at"] = time.monotonic()
+        complete = session["received"] == session["size"]
+        if complete:
+            session["temporary_path"].replace(session["video_path"])
+            session["complete"] = True
+        return jsonify(
+            complete=complete,
+            received=session["received"],
+            size=session["size"],
+        )
 
 
 @app.post("/generate")
@@ -707,6 +1050,7 @@ def generate():
     valid_uploads = []
     image_paths = []
     video_path = None
+    completed_upload_id = None
 
     if mode == "images":
         if not uploads or all(not upload.filename for upload in uploads):
@@ -723,14 +1067,27 @@ def generate():
             upload.save(image_path)
             image_paths.append(image_path)
     elif mode == "video":
-        upload = request.files.get("video")
-        if upload is None or not upload.filename:
-            return jsonify(error="Upload a video file."), 400
-        suffix = Path(upload.filename).suffix.lower()
-        if suffix not in ALLOWED_VIDEO_EXTENSIONS:
-            return jsonify(error="Use an MP4, MOV, M4V, or WebM video."), 400
-        video_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
-        upload.save(video_path)
+        completed_upload_id = request.form.get("video_upload_id")
+        if completed_upload_id:
+            with upload_sessions_lock:
+                session = upload_sessions.get(completed_upload_id)
+                if session is None or not session["complete"]:
+                    return jsonify(error="Video upload is incomplete or has expired."), 400
+                video_path = session["video_path"]
+        else:
+            upload = request.files.get("video")
+            if upload is None or not upload.filename:
+                return jsonify(error="Upload a video file."), 400
+            suffix = Path(upload.filename).suffix.lower()
+            if suffix not in ALLOWED_VIDEO_EXTENSIONS:
+                return jsonify(error="Use an MP4, MOV, M4V, or WebM video."), 400
+            video_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+            upload.save(video_path)
+            if video_path.stat().st_size > MAX_VIDEO_UPLOAD_BYTES:
+                video_path.unlink(missing_ok=True)
+                return jsonify(
+                    error=f"Video exceeds the configured {MAX_VIDEO_UPLOAD_MB} MB upload limit."
+                ), 413
 
     job_id = uuid.uuid4().hex
     work_dir = OUTPUT_DIR / job_id
@@ -750,6 +1107,9 @@ def generate():
         }
     uploaded_paths = image_paths + ([video_path] if video_path else [])
     total_size = sum(path.stat().st_size for path in uploaded_paths)
+    if completed_upload_id:
+        with upload_sessions_lock:
+            upload_sessions.pop(completed_upload_id, None)
     media_description = (
         f"{len(image_paths)} images"
         if mode == "images"

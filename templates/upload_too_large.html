@@ -7,8 +7,8 @@
   </head>
   <body>
     <h1>Upload too large</h1>
-    <p>The combined upload is larger than this server's {{ max_upload_mb }} MB limit.</p>
-    <p>Try fewer or smaller images, or increase the server upload limit and restart the app.</p>
+    <p>This request is larger than the server's {{ max_upload_mb }} MB per-request limit.</p>
+    <p>Try fewer or smaller images. Video uploads are sent in chunks and have a separate configurable total-size limit.</p>
     <a href="/">Return to the video generator</a>
   </body>
 </html>

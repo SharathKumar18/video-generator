@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: video-generator
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: MAX_VIDEO_UPLOAD_MB
+        value: "512"
+      - key: DATA_DIR
+        value: /tmp/video-generator-data

@@ -37,6 +37,7 @@
   </head>
   <body>
     <h1>Transcript-to-Video Studio</h1>
+    <p><a href="/docs">How it works: models, processing flow, and diagram</a></p>
     <form action="/generate" method="post" enctype="multipart/form-data">
       <label>
         Transcript (required)
@@ -102,6 +103,7 @@
       <label id="video-upload" hidden>
         Video
         <input id="video" type="file" name="video" accept=".mp4,.mov,.m4v,.webm">
+        <small class="help">Large videos are uploaded in small chunks; the server's total-size limit still applies.</small>
       </label>
       <p id="upload-help" class="help">Speech uses a free local Piper voice. Narration uses your text as written; it is not automatically translated. Hindi voice models are licensed CC BY-NC-SA 4.0 and are for non-commercial use only. Tone settings adjust speaking pace, not emotional acting.</p>
       <div id="selected-files" hidden>
@@ -319,6 +321,58 @@
         }
       }
 
+      async function uploadVideoInChunks(file) {
+        const startResponse = await fetch("/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ filename: file.name, size: file.size })
+        });
+        const start = await startResponse.json();
+        if (!startResponse.ok) {
+          throw new Error(start.error || `Could not start video upload (HTTP ${startResponse.status}).`);
+        }
+
+        let uploadedBytes = 0;
+        const chunkCount = Math.ceil(file.size / start.chunk_size);
+        for (let index = 0; index < chunkCount; index += 1) {
+          const begin = index * start.chunk_size;
+          const end = Math.min(begin + start.chunk_size, file.size);
+          const chunk = file.slice(begin, end);
+          const result = await new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", `/uploads/${encodeURIComponent(start.upload_id)}/chunks/${index}`);
+            request.setRequestHeader("Content-Type", "application/octet-stream");
+            request.setRequestHeader("Accept", "application/json");
+            request.upload.addEventListener("progress", (uploadEvent) => {
+              const currentBytes = uploadedBytes + (uploadEvent.lengthComputable ? uploadEvent.loaded : 0);
+              uploadProgress.value = Math.round((currentBytes / file.size) * 100);
+              progressMessage.textContent = `Uploading video in chunks: ${uploadProgress.value}%`;
+            });
+            request.addEventListener("load", () => {
+              let result = {};
+              try {
+                result = JSON.parse(request.responseText);
+              } catch {
+                reject(new Error(`Upload chunk ${index + 1} returned an invalid response.`));
+                return;
+              }
+              if (request.status !== 200) {
+                reject(new Error(result.error || `Video upload failed (HTTP ${request.status}).`));
+                return;
+              }
+              uploadedBytes = end;
+              resolve(result);
+            });
+            request.addEventListener("error", () => reject(new Error("Connection interrupted while uploading the video. Try again.")));
+            request.send(chunk);
+          });
+          if (end === file.size && !result.complete) {
+            throw new Error("The server did not receive the complete video. Try uploading again.");
+          }
+        }
+        return start.upload_id;
+      }
+
       function showSelectedFiles(files) {
         fileList.replaceChildren();
         selectedFiles.hidden = files.length === 0;
@@ -372,14 +426,21 @@
               formData.append("images", image);
             }
           } else if (mode === "video" && files.length) {
-            formData.append("video", files[0]);
+            generateButton.textContent = "Uploading...";
+            progressMessage.textContent = "Starting chunked video upload...";
+            const uploadId = await uploadVideoInChunks(files[0]);
+            formData.append("video_upload_id", uploadId);
           }
 
-          generateButton.textContent = "Uploading...";
+          if (mode !== "video") {
+            generateButton.textContent = "Uploading...";
+          }
           uploadProgress.value = 0;
           progressMessage.textContent = mode === "transcript_only"
             ? "Sending transcript to the local generation server..."
-            : "Uploading optimized media...";
+            : mode === "video"
+              ? "Starting generation with the uploaded video..."
+              : "Uploading optimized images...";
           const request = new XMLHttpRequest();
           request.open("POST", form.action);
           request.setRequestHeader("Accept", "application/json");
@@ -396,17 +457,17 @@
             progressMessage.textContent = "Upload complete. Creating speech audio and rendering the video and GIF...";
           });
           request.addEventListener("load", () => {
-            if (request.status === 413) {
-              progressMessage.textContent = "The upload was rejected as too large. Try a smaller video or check the server's upload limit.";
-              generateButton.disabled = false;
-              generateButton.textContent = "Try again";
-              return;
-            }
             let responseBody = {};
             try {
               responseBody = JSON.parse(request.responseText);
             } catch {
               responseBody = {};
+            }
+            if (request.status === 413) {
+              progressMessage.textContent = responseBody.error || "The upload exceeds the server's configured size limit.";
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+              return;
             }
             if (request.status !== 202 || !responseBody.job_id) {
               progressMessage.textContent = responseBody.error || `Generation failed (HTTP ${request.status}). Check the server and try again.`;

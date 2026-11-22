@@ -19,6 +19,8 @@ class VideoGeneratorTest(unittest.TestCase):
         app.UPLOAD_DIR.mkdir()
         with app.jobs_lock:
             app.jobs.clear()
+        with app.upload_sessions_lock:
+            app.upload_sessions.clear()
         self.client = app.app.test_client()
 
     def tearDown(self):
@@ -38,6 +40,15 @@ class VideoGeneratorTest(unittest.TestCase):
         self.assertIn(b'value="hi">Hindi', response.data)
         self.assertIn(b'value="fill">Fill', response.data)
         self.assertIn(b"id=\"generation-log\"", response.data)
+        self.assertIn(b'href="/docs"', response.data)
+
+    def test_processing_guide_is_available_from_the_app(self):
+        response = self.client.get("/docs")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Video Generator: flow, models, and libraries", response.data)
+        self.assertIn(b"Animated poses, props, effects", response.data)
+        response.close()
 
     def test_transcript_only_request_creates_pollable_job(self):
         with patch.object(app, "Thread") as thread_class:
@@ -96,6 +107,23 @@ class VideoGeneratorTest(unittest.TestCase):
             self.assertEqual(image.size, (320, 180))
         self.assertIn("Created stick-figure scene 3 of 3.", messages[-1])
 
+    def test_transcript_only_creates_rich_animated_scenes(self):
+        work_dir = Path(self.temp_dir.name) / "animated-scenes"
+        work_dir.mkdir()
+        animations = app.generate_stickman_animations(
+            "First, develop an idea. Finally, celebrate success.",
+            work_dir,
+            640,
+            360,
+            4,
+            lambda _message, _progress: None,
+        )
+
+        self.assertEqual(len(animations), 2)
+        with app.Image.open(animations[0]) as animation:
+            self.assertEqual(animation.size, (640, 360))
+            self.assertGreater(animation.n_frames, 1)
+
     def test_image_mode_requires_at_least_one_image(self):
         response = self.client.post(
             "/generate",
@@ -109,6 +137,69 @@ class VideoGeneratorTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Upload at least one image", response.json["error"])
+
+    def test_video_upload_is_chunked_and_consumed_by_generation_job(self):
+        original_chunk_size = app.VIDEO_CHUNK_BYTES
+        app.VIDEO_CHUNK_BYTES = 5
+        start = self.client.post(
+            "/uploads",
+            json={"filename": "large-video.mp4", "size": 11},
+        )
+        self.assertEqual(start.status_code, 201)
+        upload_id = start.json["upload_id"]
+        try:
+            for index, chunk_body in enumerate((b"video", b"-byte", b"s")):
+                chunk = self.client.post(
+                    f"/uploads/{upload_id}/chunks/{index}",
+                    data=chunk_body,
+                    content_type="application/octet-stream",
+                )
+                self.assertEqual(chunk.status_code, 200)
+            self.assertTrue(chunk.json["complete"])
+
+            with patch.object(app, "Thread") as thread_class:
+                response = self.client.post(
+                    "/generate",
+                    data={
+                        "transcript": "A short test transcript.",
+                        "mode": "video",
+                        "platform": "youtube",
+                        "video_upload_id": upload_id,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+
+            self.assertEqual(response.status_code, 202)
+            uploaded_video = thread_class.call_args.kwargs["args"][8]
+            self.assertEqual(uploaded_video.read_bytes(), b"video-bytes")
+            self.assertNotIn(upload_id, app.upload_sessions)
+        finally:
+            app.VIDEO_CHUNK_BYTES = original_chunk_size
+
+    def test_video_upload_rejects_out_of_order_chunks_and_oversized_file(self):
+        original_max = app.MAX_VIDEO_UPLOAD_BYTES
+        app.MAX_VIDEO_UPLOAD_BYTES = 20
+        try:
+            too_large = self.client.post(
+                "/uploads",
+                json={"filename": "large-video.mp4", "size": 21},
+            )
+            self.assertEqual(too_large.status_code, 413)
+
+            start = self.client.post(
+                "/uploads",
+                json={"filename": "video.mp4", "size": 12},
+            )
+            self.assertEqual(start.status_code, 201)
+            upload_id = start.json["upload_id"]
+            out_of_order = self.client.post(
+                f"/uploads/{upload_id}/chunks/1",
+                data=b"video-bytes",
+                content_type="application/octet-stream",
+            )
+            self.assertEqual(out_of_order.status_code, 409)
+        finally:
+            app.MAX_VIDEO_UPLOAD_BYTES = original_max
 
     def test_unknown_job_returns_not_found(self):
         response = self.client.get("/jobs/not-a-job")
