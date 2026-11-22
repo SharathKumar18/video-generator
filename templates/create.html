@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ mode_info.title }} · Video Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="topbar" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>Video Studio</span></a>
+        <div class="top-links">
+          <a class="top-link" href="/settings" data-settings-link>Global settings</a>
+        </div>
+      </nav>
+      <div class="page-title-row">
+        <a class="back-link" href="/">← Change workflow</a>
+        <span class="step-label">STEP 2 OF 2 · ADD YOUR INPUTS</span>
+      </div>
+      <header class="hero">
+        <p class="eyebrow">{{ mode_info.title }}</p>
+        <h1>Bring your story together.</h1>
+        <p class="hero-copy">{{ mode_info.description }}</p>
+      </header>
+
+      <form id="generator-form" class="surface form-card" action="/generate" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="platform" value="youtube">
+        <input type="hidden" name="language" value="en">
+        <input type="hidden" name="gender" value="female">
+        <input type="hidden" name="tone" value="natural">
+        <input type="hidden" name="layout" value="fit">
+
+        <div class="settings-chips" id="settings-summary" aria-label="Current global settings"></div>
+        {% if mode != "audio_images" %}
+          <label class="field" for="transcript">Transcript
+            <textarea id="transcript" name="transcript" placeholder="Paste your narration transcript here..." {% if mode != "audio_images" %}required{% endif %}></textarea>
+          </label>
+        {% endif %}
+
+        {% if mode == "transcript_only" %}
+          <label class="field" for="gemini-key">Gemini API key <span class="field-help">Optional · use Gemini for illustrated scenes</span>
+            <input id="gemini-key" name="gemini_api_key" type="password" autocomplete="new-password" placeholder="Paste your Gemini API key">
+            <small>Your key is used only for this job and is not saved. Only enter it on a server you trust; this app has no login. Without a key, local illustrated scenes are used. A character description or reference requires a key.</small>
+          </label>
+          <label class="field" for="character-description">Character description <span class="field-help">Optional · asks Gemini to keep the same character across 9 scenes</span>
+            <input id="character-description" name="character_description" type="text" maxlength="500" placeholder="For example: a curious young astronaut with a yellow jacket">
+          </label>
+          <label class="field" for="character-image">Character reference image <span class="field-help">Optional · JPG, PNG, or WebP</span>
+            <input id="character-image" name="character_image" type="file" accept=".jpg,.jpeg,.png,.webp">
+          </label>
+          <div id="gemini-consent" class="privacy-note" hidden>
+            <label class="check-row"><input id="external-consent" name="external_visual_consent" value="yes" type="checkbox">
+              <span>I am 18 or older and agree to send the transcript and any character details/reference image to Google Gemini to generate scenes. On unpaid API tiers, Google may use submitted inputs to improve services and human reviewers may process them; paid-tier terms differ. Usage charges may apply. I will not send sensitive information.</span>
+            </label>
+          </div>
+        {% elif mode == "images" %}
+          <label class="field" for="images">Images <span class="field-help">Select multiple images in the order they should appear.</span>
+            <input id="images" name="images" type="file" accept=".jpg,.jpeg,.png,.webp" multiple required>
+          </label>
+        {% elif mode == "audio_images" %}
+          <label class="field" for="images">Images <span class="field-help">Select multiple images in the order they should appear. They cycle with gentle motion until the audio ends.</span>
+            <input id="images" name="images" type="file" accept=".jpg,.jpeg,.png,.webp" multiple required>
+          </label>
+          <label class="field" for="audio">Audio track
+            <input id="audio" name="audio" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus" required>
+            <small>Large audio files upload in chunks. Supported: MP3, WAV, M4A, AAC, OGG, FLAC, OPUS.</small>
+          </label>
+        {% elif mode == "video" %}
+          <label class="field" for="video">Video
+            <input id="video" name="video" type="file" accept=".mp4,.mov,.m4v,.webm" required>
+            <small>Large video files upload in chunks; the server's total-size limit applies.</small>
+          </label>
+        {% endif %}
+
+        <div class="file-summary" id="file-summary" hidden><strong id="file-summary-title"></strong><ul id="file-list"></ul></div>
+        <button id="generate-button" class="primary-button" type="submit">Create video</button>
+      </form>
+
+      <section id="progress-panel" class="surface progress-panel" aria-live="polite" hidden>
+        <div class="progress-top"><h2>Creating your video</h2><span class="progress-message" id="progress-message"></span></div>
+        <progress id="upload-progress" max="100" value="0"></progress>
+        <div class="activity-log"><h2>Generation log</h2><ul id="generation-log"></ul></div>
+      </section>
+      <p class="footer-note">Format, narration, pace, and framing can be changed in <a href="/settings">Global settings</a>.</p>
+    </main>
+    <script>
+      const form = document.querySelector("#generator-form");
+      const mode = form.elements.mode.value;
+      const settings = ["platform", "language", "gender", "tone", "layout"];
+      const labels = {
+        platform: { youtube: "YouTube 16:9", vertical: "Shorts / Reels 9:16", instagram: "Instagram 4:5", square: "Square 1:1" },
+        language: { en: "English", hi: "Hindi" },
+        gender: { female: "Female voice", male: "Male voice" },
+        tone: { natural: "Natural pace", calm: "Calm pace", upbeat: "Upbeat pace" },
+        layout: { fit: "Fit framing", fill: "Fill framing" }
+      };
+      for (const name of settings) {
+        const value = localStorage.getItem(`video-studio.${name}`);
+        const control = form.elements[name];
+        if (value && labels[name][value]) control.value = value;
+      }
+      document.querySelector("#settings-summary").replaceChildren(
+        ...settings.map((name) => {
+          const chip = document.createElement("span");
+          chip.className = "settings-chip";
+          chip.innerHTML = `<strong>${labels[name][form.elements[name].value]}</strong>`;
+          return chip;
+        })
+      );
+      document.querySelector("[data-settings-link]").addEventListener("click", () => {
+        sessionStorage.setItem("settingsReturnTo", location.pathname + location.search);
+      });
+
+      const fileSummary = document.querySelector("#file-summary");
+      const fileSummaryTitle = document.querySelector("#file-summary-title");
+      const fileList = document.querySelector("#file-list");
+      const imageInput = document.querySelector("#images");
+      const audioInput = document.querySelector("#audio");
+      const videoInput = document.querySelector("#video");
+      const characterImageInput = document.querySelector("#character-image");
+      const geminiKeyInput = document.querySelector("#gemini-key");
+      const characterDescriptionInput = document.querySelector("#character-description");
+      const consentBox = document.querySelector("#gemini-consent");
+      const consentInput = document.querySelector("#external-consent");
+      const generateButton = document.querySelector("#generate-button");
+      const progressPanel = document.querySelector("#progress-panel");
+      const progressMessage = document.querySelector("#progress-message");
+      const uploadProgress = document.querySelector("#upload-progress");
+      const generationLog = document.querySelector("#generation-log");
+      function updateGeminiConsent() {
+        if (!consentBox) return;
+        const hasKey = Boolean(geminiKeyInput.value.trim());
+        const hasCharacter = Boolean(characterDescriptionInput.value.trim() || characterImageInput.files[0]);
+        geminiKeyInput.required = hasCharacter;
+        consentBox.hidden = !hasKey;
+        consentInput.required = hasKey;
+      }
+      if (geminiKeyInput) geminiKeyInput.addEventListener("input", updateGeminiConsent);
+      if (characterDescriptionInput) characterDescriptionInput.addEventListener("input", updateGeminiConsent);
+      if (characterImageInput) characterImageInput.addEventListener("change", updateGeminiConsent);
+      updateGeminiConsent();
+
+      function formatSize(bytes) {
+        return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      }
+      function showFiles(files) {
+        fileList.replaceChildren();
+        fileSummary.hidden = files.length === 0;
+        fileSummaryTitle.textContent = `${files.length} file${files.length === 1 ? "" : "s"} selected (${formatSize(files.reduce((sum, file) => sum + file.size, 0))})`;
+        for (const file of files) {
+          const item = document.createElement("li");
+          item.textContent = `${file.name} · ${formatSize(file.size)}`;
+          fileList.append(item);
+        }
+      }
+      if (imageInput) imageInput.addEventListener("change", () => showFiles(Array.from(imageInput.files)));
+      if (audioInput) audioInput.addEventListener("change", () => showFiles([...Array.from(imageInput.files), audioInput.files[0]].filter(Boolean)));
+      if (videoInput) videoInput.addEventListener("change", () => showFiles(Array.from(videoInput.files)));
+
+      async function prepareImage(file) {
+        const dimensions = { youtube: [1280, 720], vertical: [720, 1280], instagram: [864, 1080], square: [1080, 1080] };
+        const [width, height] = dimensions[form.elements.platform.value];
+        const bitmap = await createImageBitmap(file);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Could not prepare an image for upload.");
+          const targetAspect = width / height;
+          const sourceAspect = bitmap.width / bitmap.height;
+          if (form.elements.layout.value === "fill") {
+            let sx = 0, sy = 0, sw = bitmap.width, sh = bitmap.height;
+            if (sourceAspect > targetAspect) { sw = bitmap.height * targetAspect; sx = (bitmap.width - sw) / 2; }
+            else { sh = bitmap.width / targetAspect; sy = (bitmap.height - sh) / 2; }
+            context.drawImage(bitmap, sx, sy, sw, sh, 0, 0, width, height);
+          } else {
+            context.fillStyle = "#fff";
+            context.fillRect(0, 0, width, height);
+            const ratio = Math.min(width / bitmap.width, height / bitmap.height);
+            const w = bitmap.width * ratio, h = bitmap.height * ratio;
+            context.drawImage(bitmap, (width - w) / 2, (height - h) / 2, w, h);
+          }
+          const blob = await new Promise((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Could not compress an image.")), "image/jpeg", .88));
+          return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+        } finally { bitmap.close(); }
+      }
+      async function prepareCharacterImage(file) {
+        const bitmap = await createImageBitmap(file);
+        try {
+          const scale = Math.min(1, 768 / Math.max(bitmap.width, bitmap.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Could not prepare the character reference.");
+          context.fillStyle = "#fff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Could not prepare the character reference.")), "image/jpeg", .85));
+          return new File([blob], "character-reference.jpg", { type: "image/jpeg" });
+        } finally { bitmap.close(); }
+      }
+      async function uploadMediaInChunks(file) {
+        const startResponse = await fetch("/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ filename: file.name, size: file.size })
+        });
+        const start = await startResponse.json();
+        if (!startResponse.ok) throw new Error(start.error || `Could not start media upload (HTTP ${startResponse.status}).`);
+        let uploadedBytes = 0;
+        const chunkCount = Math.ceil(file.size / start.chunk_size);
+        for (let index = 0; index < chunkCount; index += 1) {
+          const end = Math.min((index + 1) * start.chunk_size, file.size);
+          const result = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", `/uploads/${encodeURIComponent(start.upload_id)}/chunks/${index}`);
+            xhr.setRequestHeader("Content-Type", "application/octet-stream");
+            xhr.setRequestHeader("Accept", "application/json");
+            xhr.upload.addEventListener("progress", (event) => {
+              const loaded = uploadedBytes + (event.lengthComputable ? event.loaded : 0);
+              uploadProgress.value = Math.round(100 * loaded / file.size);
+              progressMessage.textContent = `Uploading media · ${uploadProgress.value}%`;
+            });
+            xhr.addEventListener("load", () => {
+              let data = {};
+              try { data = JSON.parse(xhr.responseText); } catch { reject(new Error("The media upload returned an invalid response.")); return; }
+              if (xhr.status !== 200) { reject(new Error(data.error || `Media upload failed (HTTP ${xhr.status}).`)); return; }
+              uploadedBytes = end;
+              resolve(data);
+            });
+            xhr.addEventListener("error", () => reject(new Error("Connection interrupted while uploading media.")));
+            xhr.send(file.slice(index * start.chunk_size, end));
+          });
+          if (end === file.size && !result.complete) throw new Error("The server did not receive the complete media file.");
+        }
+        return start.upload_id;
+      }
+      function showLogs(entries) {
+        generationLog.replaceChildren(...entries.map((entry) => {
+          const item = document.createElement("li");
+          const time = document.createElement("time");
+          time.textContent = entry.time;
+          const message = document.createElement("span");
+          message.textContent = entry.message;
+          item.append(time, message);
+          return item;
+        }));
+      }
+      async function showResultPage(jobId) {
+        const response = await fetch(`/results/${encodeURIComponent(jobId)}`);
+        if (!response.ok) throw new Error(`Could not load generated files (HTTP ${response.status}).`);
+        document.open();
+        document.write(await response.text());
+        document.close();
+      }
+      async function watchJob(jobId) {
+        while (true) {
+          const response = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+          const job = await response.json();
+          if (!response.ok) throw new Error(job.error || `Could not read job status (HTTP ${response.status}).`);
+          progressMessage.textContent = job.message;
+          uploadProgress.value = job.progress;
+          showLogs(job.logs);
+          if (job.status === "complete") { await showResultPage(jobId); return; }
+          if (job.status === "failed") {
+            if (job.files && Object.keys(job.files).length) { await showResultPage(jobId); return; }
+            generateButton.disabled = false;
+            generateButton.textContent = "Try again";
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
+      }
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        const images = imageInput ? Array.from(imageInput.files) : [];
+        const media = mode === "video" ? videoInput.files[0] : mode === "audio_images" ? audioInput.files[0] : null;
+        progressPanel.hidden = false;
+        uploadProgress.value = 0;
+        generationLog.replaceChildren();
+        progressMessage.textContent = "Preparing your inputs...";
+        generateButton.disabled = true;
+        try {
+          const data = new FormData();
+          data.append("mode", mode);
+          for (const name of ["transcript", "platform", "language", "gender", "tone", "layout", "gemini_api_key", "character_description"]) {
+            const control = form.elements[name];
+            if (control) data.append(name, control.value);
+          }
+          if (consentInput?.checked) data.append("external_visual_consent", "yes");
+          if (characterImageInput?.files[0]) {
+            data.append("character_image", await prepareCharacterImage(characterImageInput.files[0]));
+          }
+          for (let index = 0; index < images.length; index += 1) {
+            progressMessage.textContent = `Preparing image ${index + 1} of ${images.length}...`;
+            data.append("images", await prepareImage(images[index]));
+          }
+          if (media) {
+            progressMessage.textContent = "Uploading media in chunks...";
+            data.append(mode === "video" ? "video_upload_id" : "audio_upload_id", await uploadMediaInChunks(media));
+          }
+          progressMessage.textContent = geminiKeyInput?.value.trim()
+            ? "Sending transcript scenes to Gemini..."
+            : "Starting local video generation...";
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", form.action);
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.upload.addEventListener("progress", (uploadEvent) => {
+            if (uploadEvent.lengthComputable) {
+              uploadProgress.value = Math.round(100 * uploadEvent.loaded / uploadEvent.total);
+              progressMessage.textContent = `Uploading inputs · ${uploadProgress.value}%`;
+            }
+          });
+          xhr.addEventListener("load", () => {
+            let response = {};
+            try { response = JSON.parse(xhr.responseText); } catch {}
+            if (xhr.status !== 202 || !response.job_id) {
+              progressMessage.textContent = response.error || `Generation failed (HTTP ${xhr.status}).`;
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+              return;
+            }
+            progressMessage.textContent = "Inputs received. Rendering your video...";
+            watchJob(response.job_id).catch((error) => {
+              progressMessage.textContent = error.message || "Could not read generation progress.";
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+            });
+          });
+          xhr.addEventListener("error", () => {
+            progressMessage.textContent = "Could not reach the server. Check that the app is running and try again.";
+            generateButton.disabled = false;
+            generateButton.textContent = "Try again";
+          });
+          xhr.send(data);
+        } catch (error) {
+          progressMessage.textContent = error.message || "Could not prepare the selected files.";
+          generateButton.disabled = false;
+          generateButton.textContent = "Try again";
+        }
+      });
+    </script>
+  </body>
+</html>

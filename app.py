@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import math
 import os
@@ -7,14 +9,16 @@ import subprocess
 import textwrap
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Callable
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
-from PIL import Image, ImageDraw, ImageFont
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -71,11 +75,34 @@ VIDEO_CHUNK_BYTES = 8 * 1024 * 1024
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 FORMATS = {
     "youtube": {"label": "YouTube 16:9 (HD)", "width": 1280, "height": 720},
     "vertical": {"label": "Shorts / Reels 9:16", "width": 720, "height": 1280},
     "instagram": {"label": "Instagram Feed 4:5", "width": 864, "height": 1080},
     "square": {"label": "Square 1:1", "width": 1080, "height": 1080},
+}
+GENERATION_MODES = {
+    "transcript_only": {
+        "title": "Transcript only",
+        "description": "Create a narrated video with illustrated scenes. Add a Gemini key for AI-generated artwork.",
+        "icon": "✦",
+    },
+    "images": {
+        "title": "Transcript + images",
+        "description": "Narrate your transcript over an ordered sequence of images.",
+        "icon": "▧",
+    },
+    "audio_images": {
+        "title": "Existing audio + images",
+        "description": "Use your audio track and cycle through images with gentle motion.",
+        "icon": "♫",
+    },
+    "video": {
+        "title": "Transcript + video",
+        "description": "Replace the source video's audio with narration from your transcript.",
+        "icon": "▶",
+    },
 }
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -190,13 +217,19 @@ def existing_output_files(job_dir: Path) -> dict[str, str]:
     candidates = {
         "mp4": "video.mp4",
         "gif": "slideshow.gif",
-        "audio": "audio.wav",
     }
-    return {
+    files = {
         key: filename
         for key, filename in candidates.items()
         if (job_dir / filename).is_file()
     }
+    audio_path = next(
+        (path for path in job_dir.glob("audio.*") if path.is_file()),
+        None,
+    )
+    if audio_path is not None:
+        files["audio"] = audio_path.name
+    return files
 
 
 def read_job(job_id: str) -> dict | None:
@@ -270,22 +303,42 @@ def read_job(job_id: str) -> dict | None:
 
 
 def ffprobe_duration(path: Path) -> float:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is not None:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FileNotFoundError("FFmpeg is missing. Install FFmpeg and restart the app.")
     result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        check=True,
+        [ffmpeg, "-hide_banner", "-i", str(path)],
+        check=False,
         capture_output=True,
         text=True,
     )
-    return float(result.stdout.strip())
+    match = re.search(
+        r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",
+        result.stderr,
+    )
+    if match is None:
+        raise RuntimeError(f"Could not determine media duration: {result.stderr.strip()[-1500:]}")
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def generate_stickman_images(
@@ -435,6 +488,241 @@ def generate_stickman_images(
     return paths
 
 
+def transcript_scenes(transcript: str, scene_count: int) -> list[str]:
+    words = transcript.split()
+    scene_count = max(1, scene_count)
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?।])\s+", transcript)
+        if part.strip()
+    ] or [transcript.strip()]
+    if len(sentences) >= scene_count:
+        return [
+            " ".join(
+                sentences[index * len(sentences) // scene_count:
+                          (index + 1) * len(sentences) // scene_count]
+            )
+            for index in range(scene_count)
+        ]
+
+    scenes = [
+        " ".join(
+            words[index * len(words) // scene_count:
+                  (index + 1) * len(words) // scene_count]
+        )
+        for index in range(scene_count)
+    ]
+    return [scene or transcript for scene in scenes]
+
+
+def generate_gemini_scene_image(
+    scene: str,
+    transcript: str,
+    scene_index: int,
+    scene_count: int,
+    destination: Path,
+    api_key: str,
+    character_description: str = "",
+    character_reference: bytes | None = None,
+) -> None:
+    prompt = (
+        "Create one polished, cinematic 16:9 storybook illustration for a narrated video. "
+        "Use expressive characters, rich color, clear composition, and a consistent "
+        "hand-painted editorial animation style. Do not include words, lettering, "
+        "captions, logos, borders, or watermarks. "
+        f"Create scene {scene_index + 1} of {scene_count} in a distinct, consistent "
+        "storyboard sequence. Illustrate this narration "
+        f"moment: {scene}. Story context: {transcript}"
+    )
+    if character_description:
+        prompt += (
+            f". The recurring main character must match this description: "
+            f"{character_description}"
+        )
+    if character_reference:
+        prompt += (
+            ". Use the person or character in the supplied reference image as the "
+            "recurring main character. Preserve their recognizable appearance."
+        )
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    if character_reference:
+        content.append({
+            "type": "image",
+            "mime_type": "image/jpeg",
+            "data": base64.b64encode(character_reference).decode("ascii"),
+        })
+
+    body = json.dumps({
+        "model": "gemini-3.1-flash-lite-image",
+        "input": content,
+        "response_format": {
+            "type": "image",
+            "mime_type": "image/png",
+            "aspect_ratio": "16:9",
+            "image_size": "1024px",
+        },
+    }).encode("utf-8")
+    api_request = Request(
+        "https://generativelanguage.googleapis.com/v1beta/interactions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Api-Revision": "2026-05-20",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(api_request, timeout=120) as response:
+            result = json.loads(response.read())
+    except HTTPError as exc:
+        raise RuntimeError(
+            f"Gemini image generation failed (HTTP {exc.code}). "
+            "Check the API key, model access, and quota."
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError(f"Could not connect to Gemini: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Gemini returned an invalid image response.") from exc
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Gemini returned an invalid image response.")
+    image_data = None
+    output_image = result.get("output_image")
+    if isinstance(output_image, dict):
+        image_data = output_image.get("data")
+    if not image_data:
+        outputs = result.get("output", [])
+        if not isinstance(outputs, list):
+            raise RuntimeError("Gemini returned an invalid image response.")
+        for output in outputs:
+            if isinstance(output, dict) and output.get("type") == "image":
+                image_data = output.get("data")
+                if image_data:
+                    break
+    if not isinstance(image_data, str):
+        raise RuntimeError("Gemini did not return an image for a transcript scene.")
+    try:
+        if image_data.startswith("data:") and "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        destination.write_bytes(base64.b64decode(image_data, validate=True))
+    except (ValueError, OSError) as exc:
+        raise RuntimeError("Gemini returned invalid image data.") from exc
+
+
+def create_animated_scene_gif(
+    image_path: Path,
+    destination: Path,
+    scene_text: str,
+    width: int,
+    height: int,
+) -> None:
+    with Image.open(image_path) as source:
+        scene_image = ImageOps.fit(
+            ImageOps.exif_transpose(source).convert("RGB"),
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+        )
+
+    frames = []
+    for frame_index in range(24):
+        phase = frame_index * 2 * math.pi / 24
+        zoom = 1.0 + 0.045 * (0.5 - 0.5 * math.cos(phase))
+        scaled = scene_image.resize(
+            (round(width * zoom), round(height * zoom)),
+            Image.Resampling.LANCZOS,
+        )
+        pan = math.sin(phase) * width * 0.012
+        left = round((scaled.width - width) / 2 + pan)
+        top = (scaled.height - height) // 2
+        frame = scaled.crop((left, top, left + width, top + height))
+        draw = ImageDraw.Draw(frame, "RGBA")
+        panel_height = max(52, round(height * 0.20))
+        draw.rounded_rectangle(
+            (
+                round(width * 0.035),
+                round(height * 0.035),
+                round(width * 0.78),
+                panel_height,
+            ),
+            radius=max(8, round(height * 0.025)),
+            fill=(15, 23, 42, 205),
+        )
+        caption_font = ImageFont.load_default(size=max(14, round(height * 0.045)))
+        caption = "\n".join(textwrap.wrap(scene_text, width=max(24, width // 18))[:2])
+        draw.multiline_text(
+            (round(width * 0.06), round(height * 0.055)),
+            caption,
+            fill="#ffffff",
+            font=caption_font,
+            spacing=3,
+        )
+        frames.append(frame)
+
+    palette = frames[0].convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
+    indexed_frames = [
+        frame.quantize(palette=palette, dither=Image.Dither.NONE)
+        for frame in frames
+    ]
+    indexed_frames[0].save(
+        destination,
+        save_all=True,
+        append_images=indexed_frames[1:],
+        duration=1000 // 12,
+        loop=0,
+        optimize=False,
+    )
+
+
+def generate_gemini_animations(
+    transcript: str,
+    work_dir: Path,
+    width: int,
+    height: int,
+    has_character: bool,
+    api_key: str,
+    character_description: str,
+    character_reference: bytes | None,
+    log: Callable[[str, int], None],
+) -> list[Path]:
+    scene_count = 9 if has_character else 6
+    scenes = transcript_scenes(transcript, scene_count)
+    render_scale = min(1.0, 640 / max(width, height))
+    width = max(1, round(width * render_scale))
+    height = max(1, round(height * render_scale))
+    def render_scene(index: int, scene: str) -> Path:
+        image_path = work_dir / f"gemini-scene-{index:02d}.png"
+        animation_path = work_dir / f"gemini-animation-{index:02d}.gif"
+        generate_gemini_scene_image(
+            scene,
+            transcript,
+            index,
+            len(scenes),
+            image_path,
+            api_key,
+            character_description,
+            character_reference,
+        )
+        create_animated_scene_gif(
+            image_path,
+            animation_path,
+            scene,
+            width,
+            height,
+        )
+        image_path.unlink()
+        return animation_path
+
+    log(
+        f"Generating {len(scenes)} Gemini illustrations and animated loops.",
+        26,
+    )
+    with ThreadPoolExecutor(max_workers=min(3, len(scenes))) as executor:
+        paths = list(executor.map(render_scene, range(len(scenes)), scenes))
+    log(f"Created {len(paths)} animated Gemini scenes.", 42)
+    return paths
+
+
 def generate_stickman_animations(
     transcript: str,
     work_dir: Path,
@@ -446,20 +734,12 @@ def generate_stickman_animations(
     render_scale = min(1.0, 640 / max(width, height))
     width = max(1, round(width * render_scale))
     height = max(1, round(height * render_scale))
-    sentences = [
-        part.strip()
-        for part in re.split(r"(?<=[.!?।])\s+", transcript)
-        if part.strip()
-    ] or [transcript.strip()]
-    scene_count = min(8, len(sentences))
-    chunk_size = (len(sentences) + scene_count - 1) // scene_count
-    scenes = [
-        " ".join(sentences[index:index + chunk_size])
-        for index in range(0, len(sentences), chunk_size)
-    ]
+    scenes = transcript_scenes(
+        transcript,
+        min(6, max(1, len(transcript.split()))),
+    )
     log(f"Animating {len(scenes)} illustrated stick-figure scenes.", 25)
 
-    fps = 10
     frame_count = 24
     paths = []
     scale = min(width, height)
@@ -664,7 +944,7 @@ def generate_stickman_animations(
             animation_path,
             save_all=True,
             append_images=frames[1:],
-            duration=1000 // fps,
+            duration=1000 // 10,
             loop=0,
             optimize=True,
         )
@@ -696,19 +976,28 @@ def normalize_image(
     height: int,
     layout: str,
 ) -> None:
-    run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(source),
-            "-vf",
-            frame_filter(width, height, layout),
-            "-frames:v",
-            "1",
-            str(destination),
-        ]
-    )
+    with Image.open(source) as source_image:
+        image = ImageOps.exif_transpose(source_image).convert("RGBA")
+        background = Image.new("RGBA", image.size, "white")
+        background.alpha_composite(image)
+        image = background.convert("RGB")
+        if layout == "fill":
+            normalized = ImageOps.fit(
+                image,
+                (width, height),
+                method=Image.Resampling.LANCZOS,
+            )
+        else:
+            image.thumbnail(
+                (width, height),
+                Image.Resampling.LANCZOS,
+            )
+            normalized = Image.new("RGB", (width, height), "white")
+            normalized.paste(
+                image,
+                ((width - image.width) // 2, (height - image.height) // 2),
+            )
+    normalized.save(destination, "JPEG", quality=88, optimize=False)
 
 
 def create_assets(
@@ -720,18 +1009,25 @@ def create_assets(
     layout: str,
     image_paths: list[Path],
     video_path: Path | None,
+    audio_input_path: Path | None,
     work_dir: Path,
     log: Callable[[str, int], None],
+    gemini_api_key: str = "",
+    character_description: str = "",
+    character_reference: bytes | None = None,
 ) -> tuple[Path, Path, Path]:
     transcript_path = work_dir / "transcript.txt"
-    audio_path = work_dir / "audio.wav"
+    audio_path = audio_input_path or work_dir / "audio.wav"
     mp4_path = work_dir / "video.mp4"
     gif_path = work_dir / "slideshow.gif"
     transcript_path.write_text(transcript, encoding="utf-8")
 
-    create_speech(transcript, audio_path, voice_id, tone, log)
+    if audio_input_path is None:
+        create_speech(transcript, audio_path, voice_id, tone, log)
+    else:
+        log("Using the uploaded audio track.", 10)
     audio_duration = ffprobe_duration(audio_path)
-    log(f"Speech audio created; duration is {audio_duration:.1f} seconds.", 22)
+    log(f"Audio track duration is {audio_duration:.1f} seconds.", 22)
 
     output_format = FORMATS[platform]
     width = output_format["width"]
@@ -739,14 +1035,27 @@ def create_assets(
     log(f"Output profile: {output_format['label']} ({width}x{height}).", 23)
 
     if mode == "transcript_only":
-        image_paths = generate_stickman_animations(
-            transcript,
-            work_dir,
-            width,
-            height,
-            audio_duration,
-            log,
-        )
+        if gemini_api_key:
+            image_paths = generate_gemini_animations(
+                transcript,
+                work_dir,
+                width,
+                height,
+                bool(character_description or character_reference),
+                gemini_api_key,
+                character_description,
+                character_reference,
+                log,
+            )
+        else:
+            image_paths = generate_stickman_animations(
+                transcript,
+                work_dir,
+                width,
+                height,
+                audio_duration,
+                log,
+            )
 
     if mode == "video" and video_path is not None:
         log("Using the uploaded video as the visual track and replacing its original audio.", 45)
@@ -771,6 +1080,8 @@ def create_assets(
                 "1:a:0",
                 "-c:v",
                 "libx264",
+                "-preset",
+                "veryfast",
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -783,7 +1094,7 @@ def create_assets(
             ]
         )
     else:
-        output_fps = 10
+        output_fps = 24 if mode == "audio_images" else 10
         log(f"Preparing {len(image_paths)} slideshow images for {output_format['label']}.", 45)
         normalized_images = []
         for index, image_path in enumerate(image_paths):
@@ -796,13 +1107,23 @@ def create_assets(
                 normalize_image(image_path, normalized_path, width, height, layout)
                 normalized_images.append(normalized_path)
 
-        segment_duration = audio_duration / len(normalized_images)
+        slideshow_images = normalized_images
+        if mode == "audio_images":
+            segment_count = max(
+                len(normalized_images),
+                min(60, math.ceil(audio_duration / 6)),
+            )
+            slideshow_images = [
+                normalized_images[index % len(normalized_images)]
+                for index in range(segment_count)
+            ]
+        segment_duration = audio_duration / len(slideshow_images)
         log(
-            f"Timing {len(normalized_images)} images for about {segment_duration:.1f} seconds each.",
+            f"Timing {len(slideshow_images)} image scenes for about {segment_duration:.1f} seconds each.",
             55,
         )
         command = ["ffmpeg", "-y"]
-        for image_path in normalized_images:
+        for image_path in slideshow_images:
             if mode == "transcript_only":
                 command.extend(
                     [
@@ -829,14 +1150,28 @@ def create_assets(
                 )
 
         filters = []
-        for index in range(len(normalized_images)):
-            filters.append(
-                f"[{index}:v]scale={width}:{height},setsar=1,"
-                f"fps={output_fps},format=yuv420p[v{index}]"
+        for index in range(len(slideshow_images)):
+            image_filter = (
+                f"{frame_filter(width, height, layout)},setsar=1,"
+                f"fps={output_fps}"
             )
-        concat_inputs = "".join(f"[v{index}]" for index in range(len(normalized_images)))
+            if mode == "audio_images":
+                zoom = (
+                    "min(1+on*0.0004,1.08)"
+                    if index % 2 == 0
+                    else "max(1.08-on*0.0004,1)"
+                )
+                image_filter += (
+                    f",zoompan=z='{zoom}':"
+                    f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"d=1:s={width}x{height}:fps={output_fps}"
+                )
+            filters.append(
+                f"[{index}:v]{image_filter},format=yuv420p[v{index}]"
+            )
+        concat_inputs = "".join(f"[v{index}]" for index in range(len(slideshow_images)))
         filters.append(
-            f"{concat_inputs}concat=n={len(normalized_images)}:v=1:a=0,"
+            f"{concat_inputs}concat=n={len(slideshow_images)}:v=1:a=0,"
             "format=yuv420p[outv]"
         )
 
@@ -849,11 +1184,11 @@ def create_assets(
                 "-map",
                 "[outv]",
                 "-map",
-                f"{len(normalized_images)}:a",
+                f"{len(slideshow_images)}:a",
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                "ultrafast" if mode == "audio_images" else "veryfast",
                 "-r",
                 str(output_fps),
                 "-pix_fmt",
@@ -892,7 +1227,7 @@ def create_assets(
             str(gif_path),
         ]
     )
-    log("MP4, GIF, and WAV files are ready.", 98)
+    log("MP4, GIF, and audio files are ready.", 98)
     return mp4_path, gif_path, audio_path
 
 
@@ -906,13 +1241,26 @@ def generate_job(
     layout: str,
     image_paths: list[Path],
     video_path: Path | None,
+    audio_input_path: Path | None,
     work_dir: Path,
+    gemini_api_key: str = "",
+    character_description: str = "",
+    character_reference: bytes | None = None,
 ) -> None:
     log_job(job_id, "Job is queued; waiting for the generation slot.", status="queued")
     with generation_lock:
         log_job(
             job_id,
-            f"Generation started with Piper voice: {VOICE_MODELS[voice_id]['label']}.",
+            (
+                (
+                    "Generating AI story illustrations with Gemini and narration with "
+                    f"Piper voice: {VOICE_MODELS[voice_id]['label']}."
+                )
+                if gemini_api_key
+                else f"Generation started with Piper voice: {VOICE_MODELS[voice_id]['label']}."
+                if audio_input_path is None
+                else "Generation started with the uploaded audio."
+            ),
             status="running",
         )
         try:
@@ -925,8 +1273,12 @@ def generate_job(
                 layout,
                 image_paths,
                 video_path,
+                audio_input_path,
                 work_dir,
                 lambda message, progress: log_job(job_id, message, progress),
+                gemini_api_key,
+                character_description,
+                character_reference,
             )
         except (subprocess.CalledProcessError, ImportError, OSError, RuntimeError, ValueError) as exc:
             files = existing_output_files(work_dir)
@@ -946,7 +1298,20 @@ def generate_job(
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("home.html", modes=GENERATION_MODES)
+
+
+@app.get("/create")
+def create_page():
+    mode = request.args.get("mode", "")
+    if mode not in GENERATION_MODES:
+        return redirect("/")
+    return render_template("create.html", mode=mode, mode_info=GENERATION_MODES[mode])
+
+
+@app.get("/settings")
+def settings_page():
+    return render_template("settings.html")
 
 
 @app.get("/docs")
@@ -961,7 +1326,7 @@ def request_entity_too_large(_error):
         return jsonify(
             error=(
                 f"One upload request exceeds the {chunk_limit_mb} MB limit. "
-                "Video uploads are sent in 8 MB chunks; try again or choose a smaller file."
+                "Audio and video uploads are sent in 8 MB chunks; try again or choose a smaller file."
             )
         ), 413
     return render_template(
@@ -987,14 +1352,16 @@ def expire_upload_sessions() -> None:
 def start_video_upload():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return jsonify(error="Provide a video filename and size."), 400
+        return jsonify(error="Provide an audio or video filename and size."), 400
     filename = payload.get("filename")
     size = payload.get("size")
     if not isinstance(filename, str) or type(size) is not int or size <= 0:
-        return jsonify(error="Provide a valid video filename and size."), 400
+        return jsonify(error="Provide a valid audio or video filename and size."), 400
     suffix = Path(filename).suffix.lower()
-    if suffix not in ALLOWED_VIDEO_EXTENSIONS:
-        return jsonify(error="Use an MP4, MOV, M4V, or WebM video."), 400
+    if suffix not in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS:
+        return jsonify(
+            error="Use an MP4, MOV, M4V, or WebM video, or an MP3, WAV, M4A, AAC, OGG, FLAC, or OPUS audio file."
+        ), 400
     if size > MAX_VIDEO_UPLOAD_BYTES:
         return jsonify(
             error=f"Video exceeds the configured {MAX_VIDEO_UPLOAD_MB} MB upload limit."
@@ -1014,6 +1381,7 @@ def start_video_upload():
             "updated_at": time.monotonic(),
             "temporary_path": temporary_path,
             "video_path": UPLOAD_DIR / f"{upload_id}{suffix}",
+            "media_path": UPLOAD_DIR / f"{upload_id}{suffix}",
             "complete": False,
         }
     return jsonify(
@@ -1033,9 +1401,9 @@ def append_video_upload_chunk(upload_id: str, chunk_index: int):
     with upload_sessions_lock:
         session = upload_sessions.get(upload_id)
         if session is None:
-            return jsonify(error="Video upload session not found or expired."), 404
+            return jsonify(error="Media upload session not found or expired."), 404
         if session["complete"]:
-            return jsonify(error="This video upload is already complete."), 409
+            return jsonify(error="This media upload is already complete."), 409
         expected_index = session["received"] // VIDEO_CHUNK_BYTES
         if chunk_index != expected_index:
             return jsonify(
@@ -1058,6 +1426,15 @@ def append_video_upload_chunk(upload_id: str, chunk_index: int):
         )
 
 
+def prepare_character_reference(image_data: bytes) -> bytes:
+    with Image.open(io.BytesIO(image_data)) as source_image:
+        image = ImageOps.exif_transpose(source_image).convert("RGB")
+        image.thumbnail((768, 768), Image.Resampling.LANCZOS)
+        optimized = io.BytesIO()
+        image.save(optimized, format="JPEG", quality=82)
+    return optimized.getvalue()
+
+
 @app.post("/generate")
 def generate():
     transcript = request.form.get("transcript", "").strip()
@@ -1068,11 +1445,13 @@ def generate():
     voice_id = f"{language}_{gender}"
     tone = request.form.get("tone", "natural")
     layout = request.form.get("layout", "fit")
+    gemini_api_key = request.form.get("gemini_api_key", "").strip()
+    character_description = request.form.get("character_description", "").strip()
     uploads = request.files.getlist("images")
 
-    if not transcript:
+    if mode != "audio_images" and not transcript:
         return jsonify(error="Enter a transcript."), 400
-    if mode not in {"transcript_only", "images", "video"}:
+    if mode not in {"transcript_only", "images", "video", "audio_images"}:
         return jsonify(error="Choose a valid generation mode."), 400
     if platform not in FORMATS:
         return jsonify(error="Choose a valid output format."), 400
@@ -1084,13 +1463,35 @@ def generate():
         return jsonify(error="Choose a valid delivery pace."), 400
     if layout not in {"fit", "fill"}:
         return jsonify(error="Choose whether to fit or crop the visual."), 400
+    if mode == "transcript_only":
+        if len(character_description) > 500:
+            return jsonify(error="Keep the character description under 500 characters."), 400
+        character_upload = request.files.get("character_image")
+        if character_upload is not None and character_upload.filename:
+            if Path(character_upload.filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+                return jsonify(error="Use a JPG, PNG, or WebP character reference image."), 400
+            try:
+                character_reference = prepare_character_reference(character_upload.read())
+            except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                return jsonify(error=f"Could not read the character reference image: {exc}"), 400
+        else:
+            character_reference = None
+        if (character_description or character_reference) and not gemini_api_key:
+            return jsonify(error="Enter a Gemini API key to use a character description or reference image."), 400
+        if gemini_api_key and request.form.get("external_visual_consent") != "yes":
+            return jsonify(error="Confirm the Gemini data-sharing notice before generating AI scenes."), 400
+    else:
+        character_reference = None
+        character_description = ""
+        gemini_api_key = ""
 
     valid_uploads = []
     image_paths = []
     video_path = None
+    audio_input_path = None
     completed_upload_id = None
 
-    if mode == "images":
+    if mode in {"images", "audio_images"}:
         if not uploads or all(not upload.filename for upload in uploads):
             return jsonify(error="Upload at least one image."), 400
         for upload in uploads:
@@ -1100,10 +1501,34 @@ def generate():
             if suffix not in ALLOWED_IMAGE_EXTENSIONS:
                 return jsonify(error="Only JPG, PNG, and WebP images are supported."), 400
             valid_uploads.append((upload, suffix))
-        for upload, suffix in valid_uploads:
-            image_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
-            upload.save(image_path)
-            image_paths.append(image_path)
+    if mode == "audio_images":
+        completed_upload_id = request.form.get("audio_upload_id")
+        if completed_upload_id:
+            with upload_sessions_lock:
+                session = upload_sessions.get(completed_upload_id)
+                if (
+                    session is None
+                    or not session["complete"]
+                    or session["suffix"] not in ALLOWED_AUDIO_EXTENSIONS
+                ):
+                    return jsonify(error="Audio upload is incomplete or has expired."), 400
+                audio_input_path = session["media_path"]
+        else:
+            upload = request.files.get("audio")
+            if upload is None or not upload.filename:
+                return jsonify(error="Upload an audio file."), 400
+            suffix = Path(upload.filename).suffix.lower()
+            if suffix not in ALLOWED_AUDIO_EXTENSIONS:
+                return jsonify(
+                    error="Use an MP3, WAV, M4A, AAC, OGG, FLAC, or OPUS audio file."
+                ), 400
+            audio_input_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+            upload.save(audio_input_path)
+            if audio_input_path.stat().st_size > MAX_VIDEO_UPLOAD_BYTES:
+                audio_input_path.unlink(missing_ok=True)
+                return jsonify(
+                    error=f"Audio exceeds the configured {MAX_VIDEO_UPLOAD_MB} MB upload limit."
+                ), 413
     elif mode == "video":
         completed_upload_id = request.form.get("video_upload_id")
         if completed_upload_id:
@@ -1111,7 +1536,7 @@ def generate():
                 session = upload_sessions.get(completed_upload_id)
                 if session is None or not session["complete"]:
                     return jsonify(error="Video upload is incomplete or has expired."), 400
-                video_path = session["video_path"]
+                video_path = session["media_path"]
         else:
             upload = request.files.get("video")
             if upload is None or not upload.filename:
@@ -1127,9 +1552,18 @@ def generate():
                     error=f"Video exceeds the configured {MAX_VIDEO_UPLOAD_MB} MB upload limit."
                 ), 413
 
+    for upload, suffix in valid_uploads:
+        image_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+        upload.save(image_path)
+        image_paths.append(image_path)
+
     job_id = uuid.uuid4().hex
     work_dir = OUTPUT_DIR / job_id
     work_dir.mkdir(parents=True, exist_ok=True)
+    if audio_input_path is not None:
+        audio_input_path = audio_input_path.replace(
+            work_dir / f"audio{audio_input_path.suffix.lower()}"
+        )
 
     with jobs_lock:
         jobs[job_id] = {
@@ -1142,17 +1576,22 @@ def generate():
             "language": language,
             "tone": TONES[tone]["label"],
             "mode": mode,
+            "visual_source": "Gemini" if gemini_api_key else "Local",
         }
-    uploaded_paths = image_paths + ([video_path] if video_path else [])
+    uploaded_paths = image_paths + [
+        path for path in (video_path, audio_input_path) if path is not None
+    ]
     total_size = sum(path.stat().st_size for path in uploaded_paths)
     if completed_upload_id:
         with upload_sessions_lock:
             upload_sessions.pop(completed_upload_id, None)
     media_description = (
         f"{len(image_paths)} images"
-        if mode == "images"
+        if mode in {"images", "audio_images"}
         else "one video" if mode == "video" else "transcript-only stick-figure visuals"
     )
+    if mode == "audio_images":
+        media_description += " and uploaded audio"
     log_job(
         job_id,
         f"Received {media_description} ({total_size / (1024 * 1024):.1f} MB); "
@@ -1171,7 +1610,14 @@ def generate():
             layout,
             image_paths,
             video_path,
+            audio_input_path,
             work_dir,
+            gemini_api_key,
+            character_description,
+            character_reference,
+            gemini_api_key,
+            character_description,
+            character_reference,
         ),
         daemon=True,
     ).start()
@@ -1193,7 +1639,7 @@ def job_results(job_id: str):
         return "Generation results are not ready.", 404
     files = job.get("files", {})
     return render_template(
-        "index.html",
+        "results.html",
         job_id=job_id,
         mp4_name=files.get("mp4"),
         gif_name=files.get("gif"),

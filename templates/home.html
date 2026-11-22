@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="topbar" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>Video Studio</span></a>
+        <div class="top-links">
+          <a class="top-link" href="/settings" data-settings-link>Global settings</a>
+        </div>
+      </nav>
+
+      <header class="hero">
+        <p class="eyebrow">Create a video</p>
+        <h1>What are you starting with?</h1>
+        <p class="hero-copy">Choose a workflow. You’ll add your transcript or media on the next screen.</p>
+      </header>
+
+      <section class="surface mode-panel" aria-labelledby="workflow-title">
+        <div class="panel-heading">
+          <h2 id="workflow-title">Choose a workflow</h2>
+          <span class="muted">Your format and narration preferences are in Global settings.</span>
+        </div>
+        <div class="mode-grid">
+          {% for mode_id, mode in modes.items() %}
+            <a class="mode-card" href="/create?mode={{ mode_id }}">
+              <span class="mode-icon" aria-hidden="true">{{ mode.icon }}</span>
+              <span class="mode-copy">
+                <strong>{{ mode.title }}</strong>
+                <small>{{ mode.description }}</small>
+                <span class="card-action">Continue <span aria-hidden="true">→</span></span>
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      </section>
+      <p class="footer-note">Your global settings stay saved in this browser.</p>
+    </main>
+    <script>
+      document.querySelector("[data-settings-link]").addEventListener("click", () => {
+        sessionStorage.setItem("settingsReturnTo", location.pathname + location.search);
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Global settings · Video Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="topbar" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>Video Studio</span></a>
+        <a class="back-link" href="/">← Workflows</a>
+      </nav>
+      <header class="hero">
+        <p class="eyebrow">Preferences</p>
+        <h1>Global settings</h1>
+        <p class="hero-copy">These preferences apply to new videos and are saved only in this browser.</p>
+      </header>
+
+      <form id="settings-form" class="surface form-card">
+        <div class="settings-grid">
+          <label class="field">Output format
+            <select name="platform" data-setting>
+              <option value="youtube">YouTube landscape - 16:9 (1280 x 720)</option>
+              <option value="vertical">YouTube Shorts / Instagram Reels - 9:16 (720 x 1280)</option>
+              <option value="instagram">Instagram Feed portrait - 4:5 (864 x 1080)</option>
+              <option value="square">Square - 1:1 (1080 x 1080)</option>
+            </select>
+          </label>
+          <label class="field">Narration language
+            <select name="language" data-setting>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+            </select>
+          </label>
+          <label class="field">Voice
+            <select name="gender" data-setting>
+              <option value="female">Female</option>
+              <option value="male">Male</option>
+            </select>
+          </label>
+          <label class="field">Delivery pace
+            <select name="tone" data-setting>
+              <option value="natural">Natural</option>
+              <option value="calm">Calm / measured</option>
+              <option value="upbeat">Upbeat / brisk</option>
+            </select>
+          </label>
+          <label class="field">Image / video framing
+            <select name="layout" data-setting>
+              <option value="fit">Fit - show the full image with padding (no crop)</option>
+              <option value="fill">Fill - crop edges to fill the frame</option>
+            </select>
+          </label>
+        </div>
+        <p class="mode-note">Speech uses the local Piper voice and follows your transcript as written. Hindi voice models are licensed CC BY-NC-SA 4.0 and are for non-commercial use only. Pace changes speaking speed, not emotional expression.</p>
+        <div class="settings-actions">
+          <button class="primary-button" type="submit">Save settings</button>
+          <a class="secondary-button" href="/">Back to workflows</a>
+        </div>
+      </form>
+    </main>
+    <script>
+      const settings = Array.from(document.querySelectorAll("[data-setting]"));
+      for (const control of settings) {
+        const saved = localStorage.getItem(`video-studio.${control.name}`);
+        if (saved && Array.from(control.options).some((option) => option.value === saved)) {
+          control.value = saved;
+        }
+      }
+      document.querySelector("#settings-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        for (const control of settings) {
+          localStorage.setItem(`video-studio.${control.name}`, control.value);
+        }
+        const returnTo = sessionStorage.getItem("settingsReturnTo") || "/";
+        sessionStorage.removeItem("settingsReturnTo");
+        location.assign(returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/");
+      });
+    </script>
+  </body>
+</html>

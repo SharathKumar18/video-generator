@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video results · Video Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="topbar" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>Video Studio</span></a>
+        <div class="top-links"><a class="top-link" href="/">New video</a><a href="/settings">Global settings</a></div>
+      </nav>
+      <header class="hero">
+        <p class="eyebrow">Your video</p>
+        <h1>{% if error %}Generation stopped{% else %}Ready to share{% endif %}</h1>
+        {% if platform %}<p class="hero-copy">Output format: {{ platform }}{% if voice %} · Narration: {{ voice }}{% endif %}</p>{% endif %}
+      </header>
+      {% if error %}<p class="error-message">{{ error }}</p>{% endif %}
+      {% if logs %}
+        <section class="surface progress-panel activity-log">
+          <h2>Generation log</h2>
+          <ul>{% for entry in logs %}<li><time>{{ entry.time }}</time><span>{{ entry.message }}</span></li>{% endfor %}</ul>
+        </section>
+      {% endif %}
+      {% if job_id %}
+        <section class="surface outputs">
+          {% if mp4_name %}<h2>Generated video</h2><video controls preload="metadata"><source src="/preview/{{ job_id }}/{{ mp4_name }}" type="video/mp4"></video>{% endif %}
+          {% if gif_name %}<h2>GIF preview</h2><img src="/preview/{{ job_id }}/{{ gif_name }}" alt="Generated video preview">{% endif %}
+          <div class="output-links">
+            {% if mp4_name %}<a href="/download/{{ job_id }}/{{ mp4_name }}">Download MP4</a>{% endif %}
+            {% if gif_name %}<a href="/download/{{ job_id }}/{{ gif_name }}">Download GIF preview</a>{% endif %}
+            {% if audio_name %}<a href="/download/{{ job_id }}/{{ audio_name }}">Download audio</a>{% endif %}
+          </div>
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>
