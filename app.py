@@ -522,7 +522,6 @@ def generate_gemini_scene_image(
     scene_count: int,
     destination: Path,
     api_key: str,
-    character_description: str = "",
     character_reference: bytes | None = None,
 ) -> None:
     prompt = (
@@ -534,11 +533,6 @@ def generate_gemini_scene_image(
         "storyboard sequence. Illustrate this narration "
         f"moment: {scene}. Story context: {transcript}"
     )
-    if character_description:
-        prompt += (
-            f". The recurring main character must match this description: "
-            f"{character_description}"
-        )
     if character_reference:
         prompt += (
             ". Use the person or character in the supplied reference image as the "
@@ -681,11 +675,10 @@ def generate_gemini_animations(
     height: int,
     has_character: bool,
     api_key: str,
-    character_description: str,
     character_reference: bytes | None,
     log: Callable[[str, int], None],
 ) -> list[Path]:
-    scene_count = 9 if has_character else 6
+    scene_count = 8 if has_character else 6
     scenes = transcript_scenes(transcript, scene_count)
     render_scale = min(1.0, 640 / max(width, height))
     width = max(1, round(width * render_scale))
@@ -700,7 +693,6 @@ def generate_gemini_animations(
             len(scenes),
             image_path,
             api_key,
-            character_description,
             character_reference,
         )
         create_animated_scene_gif(
@@ -1013,7 +1005,6 @@ def create_assets(
     work_dir: Path,
     log: Callable[[str, int], None],
     gemini_api_key: str = "",
-    character_description: str = "",
     character_reference: bytes | None = None,
 ) -> tuple[Path, Path, Path]:
     transcript_path = work_dir / "transcript.txt"
@@ -1041,9 +1032,8 @@ def create_assets(
                 work_dir,
                 width,
                 height,
-                bool(character_description or character_reference),
+                bool(character_reference),
                 gemini_api_key,
-                character_description,
                 character_reference,
                 log,
             )
@@ -1244,7 +1234,6 @@ def generate_job(
     audio_input_path: Path | None,
     work_dir: Path,
     gemini_api_key: str = "",
-    character_description: str = "",
     character_reference: bytes | None = None,
 ) -> None:
     log_job(job_id, "Job is queued; waiting for the generation slot.", status="queued")
@@ -1277,7 +1266,6 @@ def generate_job(
                 work_dir,
                 lambda message, progress: log_job(job_id, message, progress),
                 gemini_api_key,
-                character_description,
                 character_reference,
             )
         except (subprocess.CalledProcessError, ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -1446,7 +1434,6 @@ def generate():
     tone = request.form.get("tone", "natural")
     layout = request.form.get("layout", "fit")
     gemini_api_key = request.form.get("gemini_api_key", "").strip()
-    character_description = request.form.get("character_description", "").strip()
     uploads = request.files.getlist("images")
 
     if mode != "audio_images" and not transcript:
@@ -1464,8 +1451,6 @@ def generate():
     if layout not in {"fit", "fill"}:
         return jsonify(error="Choose whether to fit or crop the visual."), 400
     if mode == "transcript_only":
-        if len(character_description) > 500:
-            return jsonify(error="Keep the character description under 500 characters."), 400
         character_upload = request.files.get("character_image")
         if character_upload is not None and character_upload.filename:
             if Path(character_upload.filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
@@ -1476,13 +1461,12 @@ def generate():
                 return jsonify(error=f"Could not read the character reference image: {exc}"), 400
         else:
             character_reference = None
-        if (character_description or character_reference) and not gemini_api_key:
-            return jsonify(error="Enter a Gemini API key to use a character description or reference image."), 400
+        if character_reference and not gemini_api_key:
+            return jsonify(error="Enter a Gemini API key to use a character reference image."), 400
         if gemini_api_key and request.form.get("external_visual_consent") != "yes":
             return jsonify(error="Confirm the Gemini data-sharing notice before generating AI scenes."), 400
     else:
         character_reference = None
-        character_description = ""
         gemini_api_key = ""
 
     valid_uploads = []
@@ -1613,7 +1597,6 @@ def generate():
             audio_input_path,
             work_dir,
             gemini_api_key,
-            character_description,
             character_reference,
         ),
         daemon=True,

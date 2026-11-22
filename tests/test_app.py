@@ -228,7 +228,7 @@ class VideoGeneratorTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 202)
             thread_args = thread_class.call_args.kwargs["args"]
-            self.assertEqual(len(thread_args), 14)
+            self.assertEqual(len(thread_args), 13)
             audio_path = thread_args[9]
             self.assertEqual(audio_path.suffix, ".mp3")
             self.assertEqual(audio_path.read_bytes(), b"audio123")
@@ -268,12 +268,15 @@ class VideoGeneratorTest(unittest.TestCase):
         self.assertEqual(duration, 83.45)
 
     def test_gemini_key_requires_consent_and_is_not_persisted(self):
+        character_image = io.BytesIO()
+        app.Image.new("RGB", (16, 16), "red").save(character_image, format="PNG")
+        character_image.seek(0)
         without_key = self.client.post(
             "/generate",
             data={
                 "mode": "transcript_only",
                 "transcript": "A short story.",
-                "character_description": "An astronaut",
+                "character_image": (character_image, "character.png"),
             },
             headers={"Accept": "application/json"},
         )
@@ -325,7 +328,6 @@ class VideoGeneratorTest(unittest.TestCase):
                 6,
                 image_path,
                 "test-key",
-                "A red fox",
                 b"reference-image",
             )
 
@@ -356,7 +358,7 @@ class VideoGeneratorTest(unittest.TestCase):
             self.assertEqual(image.size, (640, 360))
             self.assertGreater(image.n_frames, 1)
 
-    def test_gemini_generates_six_scenes_or_nine_with_a_character(self):
+    def test_gemini_generates_six_scenes_or_eight_with_a_character(self):
         transcript = " ".join(f"story-word-{index}" for index in range(120))
         work_dir = Path(self.temp_dir.name) / "gemini-scenes"
         work_dir.mkdir()
@@ -380,7 +382,6 @@ class VideoGeneratorTest(unittest.TestCase):
                 720,
                 False,
                 "test-key",
-                "",
                 None,
                 lambda _message, _progress: None,
             ))
@@ -392,13 +393,12 @@ class VideoGeneratorTest(unittest.TestCase):
                 720,
                 True,
                 "test-key",
-                "A red fox",
                 b"reference",
                 lambda _message, _progress: None,
             ))
 
         self.assertEqual(local_count, 6)
-        self.assertEqual(character_count, 9)
+        self.assertEqual(character_count, 8)
 
     def test_audio_image_slideshow_cycles_and_matches_audio_duration(self):
         work_dir = Path(self.temp_dir.name) / "audio-images"

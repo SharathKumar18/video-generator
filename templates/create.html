@@ -42,17 +42,14 @@
         {% if mode == "transcript_only" %}
           <label class="field" for="gemini-key">Gemini API key <span class="field-help">Optional · use Gemini for illustrated scenes</span>
             <input id="gemini-key" name="gemini_api_key" type="password" autocomplete="new-password" placeholder="Paste your Gemini API key">
-            <small>Your key is used only for this job and is not saved. Only enter it on a server you trust; this app has no login. Without a key, local illustrated scenes are used. A character description or reference requires a key.</small>
+            <small>Your key is used only for this job and is not saved. Only enter it on a server you trust; this app has no login. Without a key, local stick-figure scenes are used. A character reference requires a Gemini key.</small>
           </label>
-          <label class="field" for="character-description">Character description <span class="field-help">Optional · asks Gemini to keep the same character across 9 scenes</span>
-            <input id="character-description" name="character_description" type="text" maxlength="500" placeholder="For example: a curious young astronaut with a yellow jacket">
-          </label>
-          <label class="field" for="character-image">Character reference image <span class="field-help">Optional · JPG, PNG, or WebP</span>
+          <label class="field" for="character-image">Character reference image <span class="field-help">Optional · Gemini uses it consistently across eight animated scenes. Requires a Gemini key.</span>
             <input id="character-image" name="character_image" type="file" accept=".jpg,.jpeg,.png,.webp">
           </label>
           <div id="gemini-consent" class="privacy-note" hidden>
             <label class="check-row"><input id="external-consent" name="external_visual_consent" value="yes" type="checkbox">
-              <span>I am 18 or older and agree to send the transcript and any character details/reference image to Google Gemini to generate scenes. On unpaid API tiers, Google may use submitted inputs to improve services and human reviewers may process them; paid-tier terms differ. Usage charges may apply. I will not send sensitive information.</span>
+              <span>I am 18 or older and agree to send the transcript and any character reference image to Google Gemini to generate scenes. On unpaid API tiers, Google may use submitted inputs to improve services and human reviewers may process them; paid-tier terms differ. Usage charges may apply. I will not send sensitive information.</span>
             </label>
           </div>
         {% elif mode == "images" %}
@@ -121,7 +118,6 @@
       const videoInput = document.querySelector("#video");
       const characterImageInput = document.querySelector("#character-image");
       const geminiKeyInput = document.querySelector("#gemini-key");
-      const characterDescriptionInput = document.querySelector("#character-description");
       const consentBox = document.querySelector("#gemini-consent");
       const consentInput = document.querySelector("#external-consent");
       const generateButton = document.querySelector("#generate-button");
@@ -132,13 +128,12 @@
       function updateGeminiConsent() {
         if (!consentBox) return;
         const hasKey = Boolean(geminiKeyInput.value.trim());
-        const hasCharacter = Boolean(characterDescriptionInput.value.trim() || characterImageInput.files[0]);
+        const hasCharacter = Boolean(characterImageInput.files[0]);
         geminiKeyInput.required = hasCharacter;
         consentBox.hidden = !hasKey;
         consentInput.required = hasKey;
       }
       if (geminiKeyInput) geminiKeyInput.addEventListener("input", updateGeminiConsent);
-      if (characterDescriptionInput) characterDescriptionInput.addEventListener("input", updateGeminiConsent);
       if (characterImageInput) characterImageInput.addEventListener("change", updateGeminiConsent);
       updateGeminiConsent();
 
@@ -288,7 +283,7 @@
         try {
           const data = new FormData();
           data.append("mode", mode);
-          for (const name of ["transcript", "platform", "language", "gender", "tone", "layout", "gemini_api_key", "character_description"]) {
+          for (const name of ["transcript", "platform", "language", "gender", "tone", "layout", "gemini_api_key"]) {
             const control = form.elements[name];
             if (control) data.append(name, control.value);
           }
