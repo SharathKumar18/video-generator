@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Generator</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      body { max-width: 960px; margin: 40px auto; padding: 0 20px; background: #111827; color: #f9fafb; }
+      form { display: grid; gap: 16px; }
+      textarea, input { box-sizing: border-box; width: 100%; }
+      textarea { min-height: 180px; padding: 12px; border-radius: 8px; }
+      input[type="file"], button { padding: 12px; }
+      fieldset { display: grid; gap: 12px; border: 1px solid #475569; border-radius: 8px; padding: 16px; }
+      .mode-card { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border-radius: 8px; background: #1f2937; }
+      .mode-card input { width: auto; margin-top: 5px; }
+      .mode-card span { display: grid; gap: 4px; }
+      select { padding: 12px; border-radius: 8px; }
+      button { border: 0; border-radius: 8px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
+      button:hover { background: #1d4ed8; }
+      button:disabled { opacity: .7; cursor: wait; }
+      .error { color: #fecaca; }
+      .help, .file-list { color: #cbd5e1; }
+      .file-list { margin: 8px 0 0; padding-left: 20px; }
+      .progress-panel { padding: 16px; border: 1px solid #475569; border-radius: 8px; }
+      progress { width: 100%; margin-top: 12px; }
+      .steps { line-height: 1.8; }
+      .activity-log { padding: 12px; border-radius: 8px; background: #0b1220; }
+      .activity-log ul { padding-left: 0; list-style: none; }
+      .activity-log li { margin: 6px 0; font-family: ui-monospace, monospace; font-size: .9rem; }
+      .activity-log time { color: #93c5fd; margin-right: 8px; }
+      .outputs { display: grid; gap: 24px; margin-top: 32px; }
+      video, img { max-width: 100%; border-radius: 8px; }
+      .links { display: flex; gap: 12px; flex-wrap: wrap; }
+      a { color: #93c5fd; }
+    </style>
+  </head>
+  <body>
+    <h1>Transcript-to-Video Studio</h1>
+    <form action="/generate" method="post" enctype="multipart/form-data">
+      <label>
+        Transcript (required)
+        <textarea name="transcript" placeholder="Paste the narration transcript here..." required>{{ request.form.get("transcript", "") }}</textarea>
+      </label>
+      <fieldset>
+        <legend>Choose a generation mode</legend>
+        <label class="mode-card">
+          <input type="radio" name="mode" value="transcript_only" checked>
+          <span><strong>Transcript only</strong><small>Create narrated stick-figure explainer scenes that follow the transcript. No image-generation model download is needed.</small></span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="mode" value="images">
+          <span><strong>Transcript + image sequence</strong><small>Upload multiple images; they appear in selection order and fill the narration duration.</small></span>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="mode" value="video">
+          <span><strong>Transcript + video</strong><small>Use uploaded footage, replace its original audio with narration, and loop or trim it to match.</small></span>
+        </label>
+      </fieldset>
+      <label>
+        Output format
+        <select name="platform">
+          <option value="youtube">YouTube landscape - 16:9 (1280 x 720)</option>
+          <option value="vertical">YouTube Shorts / Instagram Reels - 9:16 (720 x 1280)</option>
+          <option value="instagram">Instagram Feed portrait - 4:5 (864 x 1080)</option>
+          <option value="square">Square - 1:1 (1080 x 1080)</option>
+        </select>
+      </label>
+      <label>
+        Narration language
+        <select name="language">
+          <option value="en">English</option>
+          <option value="hi">Hindi</option>
+        </select>
+      </label>
+      <label>
+        Voice
+        <select name="gender">
+          <option value="female">Female</option>
+          <option value="male">Male</option>
+        </select>
+      </label>
+      <label>
+        Delivery pace
+        <select name="tone">
+          <option value="natural">Natural</option>
+          <option value="calm">Calm / measured</option>
+          <option value="upbeat">Upbeat / brisk</option>
+        </select>
+      </label>
+      <label id="layout-choice">
+        Image / video framing
+        <select name="layout">
+          <option value="fit">Fit - show the full image with padding (no crop)</option>
+          <option value="fill">Fill - crop edges to fill the frame</option>
+        </select>
+      </label>
+      <label id="image-upload" hidden>
+        Images (select multiple)
+        <input id="images" type="file" name="images" accept=".jpg,.jpeg,.png,.webp" multiple>
+      </label>
+      <label id="video-upload" hidden>
+        Video
+        <input id="video" type="file" name="video" accept=".mp4,.mov,.m4v,.webm">
+      </label>
+      <p id="upload-help" class="help">Speech uses a free local Piper voice. Narration uses your text as written; it is not automatically translated. Hindi voice models are licensed CC BY-NC-SA 4.0 and are for non-commercial use only. Tone settings adjust speaking pace, not emotional acting.</p>
+      <div id="selected-files" hidden>
+        <strong id="file-count"></strong>
+        <ul id="file-list" class="file-list"></ul>
+      </div>
+      <button id="generate-button" type="submit">Generate video</button>
+    </form>
+
+    <section id="progress-panel" class="progress-panel" aria-live="polite" hidden>
+      <strong id="progress-message"></strong>
+      <progress id="upload-progress" max="100" value="0"></progress>
+      <div class="activity-log">
+        <h2>Generation log</h2>
+        <ul id="generation-log"></ul>
+      </div>
+      <ol id="generation-steps" class="steps">
+        <li>Prepare selected inputs</li>
+        <li>Generate narration with the local Piper model</li>
+        <li>Create visuals, sync them to narration, and encode the MP4/GIF</li>
+      </ol>
+    </section>
+
+    {% if logs %}
+      <section class="activity-log">
+        <h2>Generation log</h2>
+        <ul>
+          {% for entry in logs %}
+            <li><time>{{ entry.time }}</time> {{ entry.message }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+
+    {% if job_id %}
+      <section class="outputs">
+        {% if platform %}<p>Output format: {{ platform }}</p>{% endif %}
+        {% if voice %}<p>Narration voice: {{ voice }}</p>{% endif %}
+        {% if mp4_name %}
+          <h2>Generated video</h2>
+          <video controls preload="metadata">
+            <source src="/preview/{{ job_id }}/{{ mp4_name }}" type="video/mp4">
+          </video>
+        {% endif %}
+        {% if gif_name %}
+          <h2>Generated GIF</h2>
+          <img src="/preview/{{ job_id }}/{{ gif_name }}" alt="Generated slideshow GIF">
+        {% endif %}
+        <div class="links">
+          {% if mp4_name %}<a href="/download/{{ job_id }}/{{ mp4_name }}">Download MP4</a>{% endif %}
+          {% if gif_name %}<a href="/download/{{ job_id }}/{{ gif_name }}">Download GIF</a>{% endif %}
+          {% if audio_name %}<a href="/download/{{ job_id }}/{{ audio_name }}">Download audio</a>{% endif %}
+        </div>
+      </section>
+    {% endif %}
+
+    <script>
+      const form = document.querySelector("form");
+      const imageInput = document.querySelector("#images");
+      const videoInput = document.querySelector("#video");
+      const imageUpload = document.querySelector("#image-upload");
+      const videoUpload = document.querySelector("#video-upload");
+      const layoutChoice = document.querySelector("#layout-choice");
+      const layoutInput = form.elements.layout;
+      const selectedFiles = document.querySelector("#selected-files");
+      const fileCount = document.querySelector("#file-count");
+      const fileList = document.querySelector("#file-list");
+      const generateButton = document.querySelector("#generate-button");
+      const progressPanel = document.querySelector("#progress-panel");
+      const progressMessage = document.querySelector("#progress-message");
+      const uploadProgress = document.querySelector("#upload-progress");
+      const generationLog = document.querySelector("#generation-log");
+      const formatInput = form.elements.platform;
+      const modeInputs = Array.from(form.querySelectorAll('input[name="mode"]'));
+
+      function currentMode() {
+        return modeInputs.find((input) => input.checked).value;
+      }
+
+      function updateMode() {
+        const mode = currentMode();
+        imageUpload.hidden = mode !== "images";
+        videoUpload.hidden = mode !== "video";
+        layoutChoice.hidden = mode === "transcript_only";
+        imageInput.required = mode === "images";
+        videoInput.required = mode === "video";
+        selectedFiles.hidden = true;
+        fileList.replaceChildren();
+        fileCount.textContent = "";
+      }
+      modeInputs.forEach((input) => input.addEventListener("change", updateMode));
+      updateMode();
+
+      function showLogs(entries) {
+        generationLog.replaceChildren(...entries.map((entry) => {
+          const item = document.createElement("li");
+          const time = document.createElement("time");
+          time.textContent = entry.time;
+          item.append(time, document.createTextNode(entry.message));
+          return item;
+        }));
+      }
+
+      async function showResultPage(jobId) {
+        const result = await fetch(`/results/${encodeURIComponent(jobId)}`);
+        if (!result.ok) {
+          throw new Error(`Could not load generated files (HTTP ${result.status}).`);
+        }
+        document.open();
+        document.write(await result.text());
+        document.close();
+      }
+
+      async function watchJob(jobId) {
+        while (true) {
+          const response = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+          const responseText = await response.text();
+          let job;
+          try {
+            job = JSON.parse(responseText);
+          } catch {
+            throw new Error(`The dev server returned an empty or invalid status response (HTTP ${response.status}). Check that the server is still running.`);
+          }
+          if (!response.ok) {
+            throw new Error(job.error || `Could not read generation status (HTTP ${response.status}).`);
+          }
+          progressMessage.textContent = job.message;
+          uploadProgress.value = job.progress;
+          showLogs(job.logs);
+
+          if (job.status === "complete") {
+            await showResultPage(jobId);
+            return;
+          }
+          if (job.status === "failed") {
+            if (job.files && Object.keys(job.files).length) {
+              await showResultPage(jobId);
+              return;
+            }
+            generateButton.disabled = false;
+            generateButton.textContent = "Try again";
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
+      }
+
+      function formatSize(bytes) {
+        return bytes < 1024 * 1024
+          ? `${(bytes / 1024).toFixed(0)} KB`
+          : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      }
+
+      function formatDimensions() {
+        const dimensions = {
+          youtube: [1280, 720],
+          vertical: [720, 1280],
+          instagram: [864, 1080],
+          square: [1080, 1080],
+        };
+        return dimensions[formatInput.value];
+      }
+
+      async function prepareImage(file) {
+        const [width, height] = formatDimensions();
+        const bitmap = await createImageBitmap(file);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error("Could not prepare an image for upload.");
+          }
+
+          const targetAspect = width / height;
+          const sourceAspect = bitmap.width / bitmap.height;
+          if (layoutInput.value === "fill") {
+            let sx = 0;
+            let sy = 0;
+            let sw = bitmap.width;
+            let sh = bitmap.height;
+            if (sourceAspect > targetAspect) {
+              sw = bitmap.height * targetAspect;
+              sx = (bitmap.width - sw) / 2;
+            } else {
+              sh = bitmap.width / targetAspect;
+              sy = (bitmap.height - sh) / 2;
+            }
+            context.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          } else {
+            context.fillStyle = "#ffffff";
+            context.fillRect(0, 0, width, height);
+            const ratio = Math.min(width / bitmap.width, height / bitmap.height);
+            const drawWidth = bitmap.width * ratio;
+            const drawHeight = bitmap.height * ratio;
+            context.drawImage(bitmap, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+          }
+
+          const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(
+              (result) => result ? resolve(result) : reject(new Error("Could not compress an image.")),
+              "image/jpeg",
+              0.88
+            );
+          });
+          const baseName = file.name.replace(/\.[^.]+$/, "");
+          return new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
+        } finally {
+          bitmap.close();
+        }
+      }
+
+      function showSelectedFiles(files) {
+        fileList.replaceChildren();
+        selectedFiles.hidden = files.length === 0;
+        fileCount.textContent = `${files.length} image${files.length === 1 ? "" : "s"} selected (${formatSize(files.reduce((sum, file) => sum + file.size, 0))} total)`;
+        for (const file of files) {
+          const item = document.createElement("li");
+          item.textContent = `${file.name} - ${formatSize(file.size)}`;
+          fileList.append(item);
+        }
+      }
+      imageInput.addEventListener("change", () => showSelectedFiles(Array.from(imageInput.files)));
+      videoInput.addEventListener("change", () => {
+        const files = Array.from(videoInput.files);
+        fileList.replaceChildren();
+        selectedFiles.hidden = files.length === 0;
+        if (files.length) {
+          fileCount.textContent = `Video selected (${formatSize(files[0].size)})`;
+          const item = document.createElement("li");
+          item.textContent = files[0].name;
+          fileList.append(item);
+        }
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const mode = currentMode();
+        const files = mode === "images"
+          ? Array.from(imageInput.files)
+          : mode === "video" ? Array.from(videoInput.files) : [];
+        const count = files.length;
+        progressPanel.hidden = false;
+        uploadProgress.value = 0;
+        generationLog.replaceChildren();
+        progressMessage.textContent = "Starting video generation...";
+        generateButton.disabled = true;
+
+        try {
+          const formData = new FormData();
+          formData.append("transcript", form.elements.transcript.value);
+          formData.append("mode", mode);
+          formData.append("platform", formatInput.value);
+          formData.append("language", form.elements.language.value);
+          formData.append("gender", form.elements.gender.value);
+          formData.append("tone", form.elements.tone.value);
+          formData.append("layout", layoutInput.value);
+          if (mode === "images") {
+            for (let index = 0; index < files.length; index += 1) {
+              progressMessage.textContent = `Resizing image ${index + 1} of ${count} for the selected format...`;
+              uploadProgress.value = Math.round((index / count) * 100);
+              const image = await prepareImage(files[index]);
+              formData.append("images", image);
+            }
+          } else if (mode === "video" && files.length) {
+            formData.append("video", files[0]);
+          }
+
+          generateButton.textContent = "Uploading...";
+          uploadProgress.value = 0;
+          progressMessage.textContent = mode === "transcript_only"
+            ? "Sending transcript to the local generation server..."
+            : "Uploading optimized media...";
+          const request = new XMLHttpRequest();
+          request.open("POST", form.action);
+          request.setRequestHeader("Accept", "application/json");
+          request.upload.addEventListener("progress", (uploadEvent) => {
+            if (uploadEvent.lengthComputable) {
+              const percent = Math.round((uploadEvent.loaded / uploadEvent.total) * 100);
+              uploadProgress.value = percent;
+              progressMessage.textContent = `Uploading images: ${percent}%`;
+            }
+          });
+          request.upload.addEventListener("load", () => {
+            uploadProgress.value = 100;
+            generateButton.textContent = "Generating...";
+            progressMessage.textContent = "Upload complete. Creating speech audio and rendering the video and GIF...";
+          });
+          request.addEventListener("load", () => {
+            if (request.status === 413) {
+              progressMessage.textContent = "The upload was rejected as too large. Try a smaller video or check the server's upload limit.";
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+              return;
+            }
+            let responseBody = {};
+            try {
+              responseBody = JSON.parse(request.responseText);
+            } catch {
+              responseBody = {};
+            }
+            if (request.status !== 202 || !responseBody.job_id) {
+              progressMessage.textContent = responseBody.error || `Generation failed (HTTP ${request.status}). Check the server and try again.`;
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+              return;
+            }
+            progressMessage.textContent = "Upload complete. Waiting for the generation job...";
+            watchJob(responseBody.job_id).catch((error) => {
+              progressMessage.textContent = error.message || "Could not read generation progress.";
+              generateButton.disabled = false;
+              generateButton.textContent = "Try again";
+            });
+          });
+          request.addEventListener("error", () => {
+            progressMessage.textContent = "Could not reach the server. Check that the app is running and try again.";
+            generateButton.disabled = false;
+            generateButton.textContent = "Try again";
+          });
+          request.send(formData);
+        } catch (error) {
+          progressMessage.textContent = error.message || "Could not prepare the images. Try JPG, PNG, or WebP files.";
+          generateButton.disabled = false;
+          generateButton.textContent = "Try again";
+        }
+      });
+    </script>
+  </body>
+</html>

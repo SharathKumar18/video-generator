@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Generator - Flow and Models</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, sans-serif; line-height: 1.55; }
+      body { max-width: 1100px; margin: 32px auto; padding: 0 20px; color: #172033; }
+      h1, h2 { color: #14365d; }
+      .callout { padding: 14px 18px; border-left: 4px solid #2878c8; background: #eef6ff; }
+      .diagram { overflow-x: auto; margin: 24px 0; padding: 16px; border: 1px solid #cbd5e1; border-radius: 12px; }
+      svg { min-width: 900px; width: 100%; height: auto; }
+      .node { fill: #f1f7ff; stroke: #2878c8; stroke-width: 2; rx: 12; }
+      .node-model { fill: #f3f8e9; stroke: #54832a; stroke-width: 2; rx: 12; }
+      .node-output { fill: #fff5e8; stroke: #c07816; stroke-width: 2; rx: 12; }
+      .arrow { stroke: #516174; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .node-title { font-size: 15px; font-weight: 700; fill: #172033; }
+      .node-copy { font-size: 12px; fill: #334155; }
+      table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; }
+      th, td { padding: 10px; border: 1px solid #cbd5e1; text-align: left; vertical-align: top; }
+      th { background: #eef3f8; }
+      code { background: #eef3f8; padding: 2px 5px; border-radius: 4px; }
+      @media (prefers-color-scheme: dark) {
+        :root { color-scheme: dark; }
+        body { background: #111827; color: #e5e7eb; }
+        h1, h2 { color: #bfdbfe; }
+        th, td { border-color: #475569; }
+        th, code { background: #1f2937; }
+        .callout { background: #172554; }
+        .diagram { border-color: #475569; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Video Generator: flow, models, and libraries</h1>
+    <p>This page documents the three generation modes, local narration voices, and what the app does after you submit a job.</p>
+
+    <div class="callout">
+      <strong>No hosted AI API is called.</strong> Piper runs locally for speech. Stick-figure scenes are drawn with Pillow and require no image-generation model. Piper voice weights download from Hugging Face on first use.
+    </div>
+
+    <h2>End-to-end flow</h2>
+    <div class="diagram">
+      <svg viewBox="0 0 1120 460" role="img" aria-labelledby="diagram-title diagram-desc">
+        <title id="diagram-title">Video generation processing flow</title>
+        <desc id="diagram-desc">A browser submits a transcript and optional images or video to Flask. Piper creates narration. The selected visual mode prepares scenes. FFmpeg matches visuals to the narration and writes the video and GIF. The browser polls for logs and displays downloads.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L9,3 z" fill="#516174"></path>
+          </marker>
+        </defs>
+        <rect class="node" x="20" y="175" width="170" height="100"></rect>
+        <text class="node-title" x="38" y="202">1. Browser form</text>
+        <text class="node-copy" x="38" y="226">Transcript + mode</text>
+        <text class="node-copy" x="38" y="246">Social format + media</text>
+
+        <rect class="node" x="235" y="175" width="180" height="100"></rect>
+        <text class="node-title" x="253" y="202">2. Flask job</text>
+        <text class="node-copy" x="253" y="226">Validates inputs</text>
+        <text class="node-copy" x="253" y="246">Returns job ID (202)</text>
+
+        <rect class="node-model" x="465" y="35" width="190" height="95"></rect>
+        <text class="node-title" x="483" y="63">Piper TTS</text>
+        <text class="node-copy" x="483" y="86">English / Hindi, male / female</text>
+        <text class="node-copy" x="483" y="106">Transcript → WAV</text>
+
+        <rect class="node" x="465" y="175" width="190" height="100"></rect>
+        <text class="node-title" x="483" y="202">3. Visual mode</text>
+        <text class="node-copy" x="483" y="226">Stick-figure scenes, images,</text>
+        <text class="node-copy" x="483" y="246">or uploaded video</text>
+
+        <rect class="node-model" x="465" y="330" width="190" height="95"></rect>
+        <text class="node-title" x="483" y="358">Pillow drawings</text>
+        <text class="node-copy" x="483" y="381">Narrative keyword scenes</text>
+        <text class="node-copy" x="483" y="401">→ local stick figures</text>
+
+        <rect class="node" x="710" y="175" width="180" height="100"></rect>
+        <text class="node-title" x="728" y="202">4. FFmpeg</text>
+        <text class="node-copy" x="728" y="226">Fit or fill selected profile</text>
+        <text class="node-copy" x="728" y="246">Sync visuals to WAV</text>
+
+        <rect class="node-output" x="945" y="175" width="155" height="100"></rect>
+        <text class="node-title" x="963" y="202">5. Outputs</text>
+        <text class="node-copy" x="963" y="226">MP4 + looping GIF</text>
+        <text class="node-copy" x="963" y="246">WAV download</text>
+
+        <path class="arrow" d="M190 225 H230"></path>
+        <path class="arrow" d="M415 205 C440 205 440 83 460 83"></path>
+        <path class="arrow" d="M415 225 H460"></path>
+        <path class="arrow" d="M560 130 V170"></path>
+        <path class="arrow" d="M560 275 V325"></path>
+        <path class="arrow" d="M655 225 H705"></path>
+        <path class="arrow" d="M890 225 H940"></path>
+      </svg>
+    </div>
+
+    <h2>Home-screen generation modes</h2>
+    <table>
+      <thead><tr><th>Mode</th><th>Inputs</th><th>Visual processing</th><th>Audio</th></tr></thead>
+      <tbody>
+        <tr><td>Transcript only</td><td>Transcript</td><td>Pillow draws up to eight stick-figure scenes in transcript order; simple narrative keywords select scene props and poses.</td><td>Piper-generated narration.</td></tr>
+        <tr><td>Transcript + image sequence</td><td>Transcript and multiple images</td><td>Images are ordered by selection, fitted or cropped as selected, and allotted equal portions of narration duration.</td><td>Piper-generated narration.</td></tr>
+        <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg decodes the uploaded footage, fits or crops it to the selected profile, then loops or trims it to match narration.</td><td>Original video sound is replaced with Piper narration.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Social video format presets</h2>
+    <ul>
+      <li><strong>YouTube landscape:</strong> 16:9, 1280 × 720.</li>
+      <li><strong>YouTube Shorts / Instagram Reels:</strong> 9:16, 720 × 1280.</li>
+      <li><strong>Instagram Feed portrait:</strong> 4:5, 864 × 1080.</li>
+      <li><strong>Square:</strong> 1:1, 1080 × 1080.</li>
+    </ul>
+
+    <h2>Models and libraries</h2>
+    <table>
+      <thead><tr><th>Component</th><th>Task</th><th>Execution and license notes</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Piper TTS: LJSpeech High (English female), Norman Medium (English male), Priyamvada Medium (Hindi female), and Pratham Medium (Hindi male)</td>
+          <td>Converts the transcript, without translation, to a WAV narration file. Natural, calm, and upbeat presets change phoneme length/speaking pace only; they do not add emotional acting.</td>
+          <td>Runs locally through ONNX Runtime. The English LJSpeech and Norman datasets are public domain. The Hindi Priyamvada and Pratham model cards specify CC BY-NC-SA 4.0; those voices are for non-commercial use only. Check current model cards and conditions before publishing.</td>
+        </tr>
+        <tr>
+          <td>Pillow</td>
+          <td>Transcript-only mode draws stick-figure scenes with props selected from simple English/Hindi narrative keywords.</td>
+          <td>Runs locally; no visual-generation model is downloaded and no transcript is sent to a hosted AI service. Scenes are illustrative rather than a full semantic translation of the narration.</td>
+        </tr>
+        <tr>
+          <td>Flask</td>
+          <td>Web form, upload validation, background jobs, status and result endpoints.</td>
+          <td>Python web framework; timestamped job logs and status are saved under <code>output/&lt;job-id&gt;/job.json</code> so completed or partial results can be recovered after a restart.</td>
+        </tr>
+        <tr>
+          <td>Browser Canvas + XMLHttpRequest</td>
+          <td>Resizes still images before upload, preserving the full image in Fit mode or cropping in Fill mode, and reports upload percentage.</td>
+          <td>Runs in the browser; does not call an AI service.</td>
+        </tr>
+        <tr>
+          <td>FFmpeg + ffprobe</td>
+          <td>Fits or crops visuals, reads audio duration, encodes H.264/AAC MP4, and creates the looping GIF. FFmpeg errors are included in the job log.</td>
+          <td>Runs locally on the server.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>OpenAI, Claude, and Gemini APIs are not used by this project. The app does not send transcript text to a hosted AI provider and does not require an API key.</p>
+
+    <h2>What happens after Generate</h2>
+    <ol>
+      <li>The browser optimizes selected still images using Fit or Fill and uploads the transcript and media.</li>
+      <li>Flask creates a background job and returns its ID.</li>
+      <li>The page polls the job status and displays timestamped server-side log entries; status/logs are also saved to disk for recovery.</li>
+      <li>Piper synthesizes the narration. The app reads its duration with ffprobe.</li>
+      <li>The selected visual mode draws stick figures or normalizes uploaded media; FFmpeg fits visuals to the narration duration and selected profile.</li>
+      <li>FFmpeg writes an MP4 and a looping GIF preview (6 fps, 480 pixels wide). The page shows previews and download links.</li>
+    </ol>
+  </body>
+</html>
