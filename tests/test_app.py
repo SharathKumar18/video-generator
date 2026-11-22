@@ -49,6 +49,15 @@ class VideoGeneratorTest(unittest.TestCase):
         for setting in (b"platform", b"language", b"gender", b"tone", b"layout"):
             self.assertIn(setting, settings.data)
 
+    def test_stylesheet_is_served_and_included_in_docker_image(self):
+        response = self.client.get("/static/app.css")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b".mode-grid", response.data)
+        response.close()
+        dockerfile = Path(app.BASE_DIR / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY static/ static/", dockerfile)
+
     def test_processing_guide_is_available_from_the_app(self):
         response = self.client.get("/docs")
 
