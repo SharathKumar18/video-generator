@@ -153,7 +153,7 @@
       <li>The page polls the job status and displays timestamped server-side log entries; status/logs are also saved to disk for recovery.</li>
       <li>Piper synthesizes the narration. The app reads its duration with ffprobe.</li>
       <li>The selected visual mode animates stick-figure scenes or normalizes uploaded media; FFmpeg fits visuals to the narration duration and selected profile.</li>
-      <li>FFmpeg writes an MP4 and a looping GIF preview (6 fps, 480 pixels wide). The page shows previews and download links.</li>
+      <li>FFmpeg writes the full-length MP4 at 10 fps for transcript/image modes, then creates a 15-second looping GIF preview (4 fps, 360 pixels wide) to keep GIF rendering and storage manageable. Uploaded-video mode remains 30 fps. The page shows previews and download links.</li>
     </ol>
 
     <h2>Hosted deployment</h2>

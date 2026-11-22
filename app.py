@@ -443,6 +443,9 @@ def generate_stickman_animations(
     duration: float,
     log: Callable[[str, int], None],
 ) -> list[Path]:
+    render_scale = min(1.0, 640 / max(width, height))
+    width = max(1, round(width * render_scale))
+    height = max(1, round(height * render_scale))
     sentences = [
         part.strip()
         for part in re.split(r"(?<=[.!?।])\s+", transcript)
@@ -457,8 +460,7 @@ def generate_stickman_animations(
     log(f"Animating {len(scenes)} illustrated stick-figure scenes.", 25)
 
     fps = 10
-    scene_duration = max(2, duration / len(scenes))
-    frame_count = max(20, min(40, round(scene_duration * fps)))
+    frame_count = 24
     paths = []
     scale = min(width, height)
     stroke = max(7, round(scale * 0.018))
@@ -749,6 +751,7 @@ def create_assets(
     if mode == "video" and video_path is not None:
         log("Using the uploaded video as the visual track and replacing its original audio.", 45)
         log("Encoding the video to the selected profile and narration duration.", 60)
+        output_fps = 30
         run(
             [
                 "ffmpeg",
@@ -761,7 +764,7 @@ def create_assets(
                 str(audio_path),
                 "-vf",
                 f"{frame_filter(width, height, layout)},"
-                "setsar=1,fps=30,format=yuv420p",
+                f"setsar=1,fps={output_fps},format=yuv420p",
                 "-map",
                 "0:v:0",
                 "-map",
@@ -780,6 +783,7 @@ def create_assets(
             ]
         )
     else:
+        output_fps = 10
         log(f"Preparing {len(image_paths)} slideshow images for {output_format['label']}.", 45)
         normalized_images = []
         for index, image_path in enumerate(image_paths):
@@ -828,7 +832,7 @@ def create_assets(
         for index in range(len(normalized_images)):
             filters.append(
                 f"[{index}:v]scale={width}:{height},setsar=1,"
-                f"fps=30,format=yuv420p[v{index}]"
+                f"fps={output_fps},format=yuv420p[v{index}]"
             )
         concat_inputs = "".join(f"[v{index}]" for index in range(len(normalized_images)))
         filters.append(
@@ -848,8 +852,10 @@ def create_assets(
                 f"{len(normalized_images)}:a",
                 "-c:v",
                 "libx264",
+                "-preset",
+                "veryfast",
                 "-r",
-                "30",
+                str(output_fps),
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
@@ -863,18 +869,23 @@ def create_assets(
                 str(mp4_path),
             ]
         )
-        log("Encoding MP4 video (H.264) with AAC narration using FFmpeg.", 60)
+        log(
+            f"Encoding MP4 video (H.264, {output_fps} fps) with AAC narration using FFmpeg.",
+            60,
+        )
         run(command)
 
-    log("Creating looping GIF from the generated MP4.", 88)
+    log("Creating a 15-second looping GIF preview from the generated MP4.", 88)
     run(
         [
             "ffmpeg",
             "-y",
+            "-t",
+            "15",
             "-i",
             str(mp4_path),
             "-vf",
-            "fps=6,scale=480:-1:flags=lanczos,"
+            "fps=4,scale=360:-1:flags=lanczos,"
             "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
             "-loop",
             "0",

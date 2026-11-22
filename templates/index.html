@@ -222,14 +222,36 @@
       }
 
       async function watchJob(jobId) {
+        let recoveryAttempts = 0;
         while (true) {
-          const response = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+          let response;
+          try {
+            response = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+          } catch {
+            recoveryAttempts += 1;
+            if (recoveryAttempts > 10) {
+              throw new Error("The server could not be reached after several retries. Check the service and try again.");
+            }
+            progressMessage.textContent = "The server connection dropped; retrying the job status...";
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            continue;
+          }
+          if (response.status >= 500) {
+            recoveryAttempts += 1;
+            if (recoveryAttempts > 10) {
+              throw new Error(`The server is still unavailable (HTTP ${response.status}). Check the service logs and try again.`);
+            }
+            progressMessage.textContent = `The server is restarting (HTTP ${response.status}); checking again...`;
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            continue;
+          }
+          recoveryAttempts = 0;
           const responseText = await response.text();
           let job;
           try {
             job = JSON.parse(responseText);
           } catch {
-            throw new Error(`The dev server returned an empty or invalid status response (HTTP ${response.status}). Check that the server is still running.`);
+            throw new Error(`The server returned an empty or invalid status response (HTTP ${response.status}).`);
           }
           if (!response.ok) {
             throw new Error(job.error || `Could not read generation status (HTTP ${response.status}).`);
