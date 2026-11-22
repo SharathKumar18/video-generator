@@ -40,11 +40,15 @@ class VideoGeneratorTest(unittest.TestCase):
 
     def test_create_and_global_settings_pages(self):
         create = self.client.get("/create?mode=audio_images")
+        transcript = self.client.get("/create?mode=transcript_only")
         settings = self.client.get("/settings")
 
         self.assertEqual(create.status_code, 200)
         self.assertIn(b'name="audio"', create.data)
         self.assertNotIn(b'name="transcript"', create.data)
+        self.assertIn(b'Use open-model images (FLUX.1-schnell)', transcript.data)
+        self.assertIn(b"local stick-figure scenes", transcript.data)
+        self.assertNotIn(b"Character description", transcript.data)
         self.assertEqual(settings.status_code, 200)
         for setting in (b"platform", b"language", b"gender", b"tone", b"layout"):
             self.assertIn(setting, settings.data)
@@ -101,6 +105,8 @@ class VideoGeneratorTest(unittest.TestCase):
         self.assertEqual(status.json["tone"], "Calm / measured")
         self.assertIn("transcript-only stick-figure visuals", status.json["logs"][0]["message"])
         self.assertEqual(thread_class.call_args.kwargs["args"][4:7], ("hi_female", "calm", "fill"))
+        self.assertEqual(status.json["visual_source"], "Local")
+        self.assertEqual(thread_class.call_args.kwargs["args"][-1], "")
 
     def test_video_framing_preserves_image_by_default_and_supports_fill(self):
         fit_filter = app.frame_filter(720, 1280, "fit")
@@ -235,7 +241,7 @@ class VideoGeneratorTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 202)
             thread_args = thread_class.call_args.kwargs["args"]
-            self.assertEqual(len(thread_args), 13)
+            self.assertEqual(len(thread_args), 12)
             audio_path = thread_args[9]
             self.assertEqual(audio_path.suffix, ".mp3")
             self.assertEqual(audio_path.read_bytes(), b"audio123")
@@ -274,33 +280,31 @@ class VideoGeneratorTest(unittest.TestCase):
 
         self.assertEqual(duration, 83.45)
 
-    def test_gemini_key_requires_consent_and_is_not_persisted(self):
-        character_image = io.BytesIO()
-        app.Image.new("RGB", (16, 16), "red").save(character_image, format="PNG")
-        character_image.seek(0)
-        without_key = self.client.post(
+    def test_huggingface_opt_in_requires_token_and_consent_and_is_not_persisted(self):
+        without_token = self.client.post(
             "/generate",
             data={
                 "mode": "transcript_only",
                 "transcript": "A short story.",
-                "character_image": (character_image, "character.png"),
+                "use_hf_images": "yes",
             },
             headers={"Accept": "application/json"},
         )
-        self.assertEqual(without_key.status_code, 400)
-        self.assertIn("Gemini API key", without_key.json["error"])
+        self.assertEqual(without_token.status_code, 400)
+        self.assertIn("Hugging Face token", without_token.json["error"])
 
         without_consent = self.client.post(
             "/generate",
             data={
                 "mode": "transcript_only",
                 "transcript": "A short story.",
-                "gemini_api_key": "test-key",
+                "use_hf_images": "yes",
+                "hf_token": "hf-test-token",
             },
             headers={"Accept": "application/json"},
         )
         self.assertEqual(without_consent.status_code, 400)
-        self.assertIn("data-sharing notice", without_consent.json["error"])
+        self.assertIn("inference notice", without_consent.json["error"])
 
         with patch.object(app, "Thread") as thread_class:
             response = self.client.post(
@@ -308,7 +312,8 @@ class VideoGeneratorTest(unittest.TestCase):
                 data={
                     "mode": "transcript_only",
                     "transcript": "A short story.",
-                    "gemini_api_key": "test-key",
+                    "use_hf_images": "yes",
+                    "hf_token": "hf-test-token",
                     "external_visual_consent": "yes",
                 },
                 headers={"Accept": "application/json"},
@@ -316,39 +321,45 @@ class VideoGeneratorTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202)
         job_id = response.json["job_id"]
-        self.assertEqual(thread_class.call_args.kwargs["args"][11], "test-key")
-        self.assertNotIn("test-key", json.dumps(app.jobs[job_id]))
+        self.assertEqual(thread_class.call_args.kwargs["args"][-1], "hf-test-token")
+        self.assertEqual(app.jobs[job_id]["visual_source"], "Hugging Face")
+        self.assertNotIn("hf-test-token", json.dumps(app.jobs[job_id]))
 
-    def test_gemini_image_request_uses_reference_and_parses_output(self):
-        image_bytes = b"image-data"
-        response_body = json.dumps({
-            "output_image": {"data": app.base64.b64encode(image_bytes).decode("ascii")}
-        }).encode("utf-8")
-        response = io.BytesIO(response_body)
+    def test_huggingface_scene_request_uses_flux_model_and_saves_image(self):
+        client_options = {}
+        request_data = {}
+
+        class FakeInferenceClient:
+            def __init__(self, **kwargs):
+                client_options.update(kwargs)
+
+            def text_to_image(self, prompt, **kwargs):
+                request_data["prompt"] = prompt
+                request_data["parameters"] = kwargs
+                return app.Image.new("RGB", (kwargs["width"], kwargs["height"]), "blue")
+
         image_path = Path(self.temp_dir.name) / "generated.png"
-
-        with patch.object(app, "urlopen", return_value=response) as urlopen:
-            app.generate_gemini_scene_image(
+        with patch.object(app, "InferenceClient", FakeInferenceClient):
+            app.generate_huggingface_scene_image(
                 "A character finds a lantern.",
                 "The full story.",
                 0,
                 6,
                 image_path,
-                "test-key",
-                b"reference-image",
+                "hf-test-token",
+                1024,
+                576,
             )
 
-        request = urlopen.call_args.args[0]
-        payload = json.loads(request.data)
-        self.assertEqual(request.headers["X-goog-api-key"], "test-key")
-        self.assertEqual(payload["model"], "gemini-3.1-flash-lite-image")
-        self.assertEqual(
-            app.base64.b64decode(payload["input"][1]["data"]),
-            b"reference-image",
-        )
-        self.assertEqual(image_path.read_bytes(), image_bytes)
+        self.assertEqual(client_options["model"], "black-forest-labs/FLUX.1-schnell")
+        self.assertEqual(client_options["provider"], "auto")
+        self.assertEqual(client_options["token"], "hf-test-token")
+        self.assertIn("scene 1 of 6", request_data["prompt"])
+        self.assertEqual(request_data["parameters"]["num_inference_steps"], 4)
+        with app.Image.open(image_path) as image:
+            self.assertEqual(image.size, (1024, 576))
 
-    def test_gemini_scene_art_becomes_a_looping_animated_gif(self):
+    def test_ai_scene_art_becomes_a_looping_animated_gif(self):
         source = Path(self.temp_dir.name) / "scene.png"
         animation = Path(self.temp_dir.name) / "scene.gif"
         app.Image.new("RGB", (800, 450), "#6084c8").save(source)
@@ -365,9 +376,9 @@ class VideoGeneratorTest(unittest.TestCase):
             self.assertEqual(image.size, (640, 360))
             self.assertGreater(image.n_frames, 1)
 
-    def test_gemini_generates_six_scenes_or_eight_with_a_character(self):
+    def test_huggingface_creates_six_animated_scenes(self):
         transcript = " ".join(f"story-word-{index}" for index in range(120))
-        work_dir = Path(self.temp_dir.name) / "gemini-scenes"
+        work_dir = Path(self.temp_dir.name) / "huggingface-scenes"
         work_dir.mkdir()
         generated_scenes = []
 
@@ -379,33 +390,20 @@ class VideoGeneratorTest(unittest.TestCase):
             destination.touch()
 
         with (
-            patch.object(app, "generate_gemini_scene_image", side_effect=fake_generate),
+            patch.object(app, "generate_huggingface_scene_image", side_effect=fake_generate),
             patch.object(app, "create_animated_scene_gif", side_effect=fake_animate),
         ):
-            local_count = len(app.generate_gemini_animations(
+            image_count = len(app.generate_huggingface_animations(
                 transcript,
                 work_dir,
                 1280,
                 720,
-                False,
-                "test-key",
-                None,
-                lambda _message, _progress: None,
-            ))
-            generated_scenes.clear()
-            character_count = len(app.generate_gemini_animations(
-                transcript,
-                work_dir,
-                1280,
-                720,
-                True,
-                "test-key",
-                b"reference",
+                "hf-test-token",
                 lambda _message, _progress: None,
             ))
 
-        self.assertEqual(local_count, 6)
-        self.assertEqual(character_count, 8)
+        self.assertEqual(image_count, 6)
+        self.assertEqual(len(generated_scenes), 6)
 
     def test_audio_image_slideshow_cycles_and_matches_audio_duration(self):
         work_dir = Path(self.temp_dir.name) / "audio-images"

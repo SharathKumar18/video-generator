@@ -40,16 +40,18 @@
         {% endif %}
 
         {% if mode == "transcript_only" %}
-          <label class="field" for="gemini-key">Gemini API key <span class="field-help">Optional · use Gemini for illustrated scenes</span>
-            <input id="gemini-key" name="gemini_api_key" type="password" autocomplete="new-password" placeholder="Paste your Gemini API key">
-            <small>Your key is used only for this job and is not saved. Only enter it on a server you trust; this app has no login. Without a key, local stick-figure scenes are used. A character reference requires a Gemini key.</small>
+          <label class="check-row mode-note">
+            <input id="use-hf-images" name="use_hf_images" value="yes" type="checkbox">
+            <span><strong>Use open-model images (FLUX.1-schnell)</strong><br>
+              Optional. Creates six illustrated scenes. Model weights use Apache 2.0; Hugging Face's inference provider may charge for generation. Leave unchecked to use local stick-figure scenes.</span>
           </label>
-          <label class="field" for="character-image">Character reference image <span class="field-help">Optional · Gemini uses it consistently across eight animated scenes. Requires a Gemini key.</span>
-            <input id="character-image" name="character_image" type="file" accept=".jpg,.jpeg,.png,.webp">
+          <label id="hf-token-field" class="field" for="hf-token" hidden>Hugging Face token
+            <input id="hf-token" name="hf_token" type="password" autocomplete="new-password" placeholder="Paste a token with Inference Providers permission">
+            <small>Used only for this job and not saved. You must have access to FLUX.1-schnell and accept its Hugging Face access conditions. Only enter your token on a server you trust.</small>
           </label>
-          <div id="gemini-consent" class="privacy-note" hidden>
+          <div id="hf-consent" class="privacy-note" hidden>
             <label class="check-row"><input id="external-consent" name="external_visual_consent" value="yes" type="checkbox">
-              <span>I am 18 or older and agree to send the transcript and any character reference image to Google Gemini to generate scenes. On unpaid API tiers, Google may use submitted inputs to improve services and human reviewers may process them; paid-tier terms differ. Usage charges may apply. I will not send sensitive information.</span>
+              <span>I agree to send transcript text to Hugging Face and its selected inference provider to generate images. Provider billing may apply to my token. I will not send sensitive information.</span>
             </label>
           </div>
         {% elif mode == "images" %}
@@ -116,26 +118,26 @@
       const imageInput = document.querySelector("#images");
       const audioInput = document.querySelector("#audio");
       const videoInput = document.querySelector("#video");
-      const characterImageInput = document.querySelector("#character-image");
-      const geminiKeyInput = document.querySelector("#gemini-key");
-      const consentBox = document.querySelector("#gemini-consent");
+      const useHfImagesInput = document.querySelector("#use-hf-images");
+      const hfTokenInput = document.querySelector("#hf-token");
+      const hfTokenField = document.querySelector("#hf-token-field");
+      const consentBox = document.querySelector("#hf-consent");
       const consentInput = document.querySelector("#external-consent");
       const generateButton = document.querySelector("#generate-button");
       const progressPanel = document.querySelector("#progress-panel");
       const progressMessage = document.querySelector("#progress-message");
       const uploadProgress = document.querySelector("#upload-progress");
       const generationLog = document.querySelector("#generation-log");
-      function updateGeminiConsent() {
-        if (!consentBox) return;
-        const hasKey = Boolean(geminiKeyInput.value.trim());
-        const hasCharacter = Boolean(characterImageInput.files[0]);
-        geminiKeyInput.required = hasCharacter;
-        consentBox.hidden = !hasKey;
-        consentInput.required = hasKey;
+      function updateHuggingFaceOptions() {
+        if (!useHfImagesInput) return;
+        const enabled = useHfImagesInput.checked;
+        hfTokenField.hidden = !enabled;
+        consentBox.hidden = !enabled;
+        hfTokenInput.required = enabled;
+        consentInput.required = enabled;
       }
-      if (geminiKeyInput) geminiKeyInput.addEventListener("input", updateGeminiConsent);
-      if (characterImageInput) characterImageInput.addEventListener("change", updateGeminiConsent);
-      updateGeminiConsent();
+      if (useHfImagesInput) useHfImagesInput.addEventListener("change", updateHuggingFaceOptions);
+      updateHuggingFaceOptions();
 
       function formatSize(bytes) {
         return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -180,22 +182,6 @@
           }
           const blob = await new Promise((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Could not compress an image.")), "image/jpeg", .88));
           return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
-        } finally { bitmap.close(); }
-      }
-      async function prepareCharacterImage(file) {
-        const bitmap = await createImageBitmap(file);
-        try {
-          const scale = Math.min(1, 768 / Math.max(bitmap.width, bitmap.height));
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-          const context = canvas.getContext("2d");
-          if (!context) throw new Error("Could not prepare the character reference.");
-          context.fillStyle = "#fff";
-          context.fillRect(0, 0, canvas.width, canvas.height);
-          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-          const blob = await new Promise((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Could not prepare the character reference.")), "image/jpeg", .85));
-          return new File([blob], "character-reference.jpg", { type: "image/jpeg" });
         } finally { bitmap.close(); }
       }
       async function uploadMediaInChunks(file) {
@@ -283,14 +269,15 @@
         try {
           const data = new FormData();
           data.append("mode", mode);
-          for (const name of ["transcript", "platform", "language", "gender", "tone", "layout", "gemini_api_key"]) {
+          for (const name of ["transcript", "platform", "language", "gender", "tone", "layout"]) {
             const control = form.elements[name];
             if (control) data.append(name, control.value);
           }
-          if (consentInput?.checked) data.append("external_visual_consent", "yes");
-          if (characterImageInput?.files[0]) {
-            data.append("character_image", await prepareCharacterImage(characterImageInput.files[0]));
+          if (useHfImagesInput?.checked) {
+            data.append("use_hf_images", "yes");
+            data.append("hf_token", hfTokenInput.value);
           }
+          if (consentInput?.checked) data.append("external_visual_consent", "yes");
           for (let index = 0; index < images.length; index += 1) {
             progressMessage.textContent = `Preparing image ${index + 1} of ${images.length}...`;
             data.append("images", await prepareImage(images[index]));
@@ -299,8 +286,8 @@
             progressMessage.textContent = "Uploading media in chunks...";
             data.append(mode === "video" ? "video_upload_id" : "audio_upload_id", await uploadMediaInChunks(media));
           }
-          progressMessage.textContent = geminiKeyInput?.value.trim()
-            ? "Sending transcript scenes to Gemini..."
+          progressMessage.textContent = useHfImagesInput?.checked
+            ? "Sending transcript scenes to Hugging Face Inference Providers..."
             : "Starting local video generation...";
           const xhr = new XMLHttpRequest();
           xhr.open("POST", form.action);
@@ -321,6 +308,7 @@
               return;
             }
             progressMessage.textContent = "Inputs received. Rendering your video...";
+            if (hfTokenInput) hfTokenInput.value = "";
             watchJob(response.job_id).catch((error) => {
               progressMessage.textContent = error.message || "Could not read generation progress.";
               generateButton.disabled = false;

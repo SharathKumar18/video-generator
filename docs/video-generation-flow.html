@@ -47,7 +47,7 @@
     <p>This page documents each of the four generation flows, the local speech model, optional AI illustrations, and what happens after you submit a job.</p>
 
     <div class="callout">
-      <strong>Speech always runs locally with Piper.</strong> Transcript-only visuals use local Pillow drawings when no Gemini key is entered. Gemini image generation is optional and runs only when a key and the user's consent are supplied. Whisper is not a text-to-speech model; it recognizes speech in audio.
+      <strong>Speech always runs locally with Piper.</strong> Transcript-only visuals use local Pillow drawings by default. FLUX.1-schnell image generation is optional and requires a Hugging Face token and explicit consent. Whisper is not a text-to-speech model; it recognizes speech in audio.
     </div>
 
     <h2>Flow 1: Transcript only</h2>
@@ -56,18 +56,18 @@
         <div class="flow-step"><strong>Transcript</strong>Paste narration text and choose global settings.</div><span class="flow-arrow">→</span>
         <div class="flow-step"><strong>Flask job</strong>Validate settings and queue a background job.</div><span class="flow-arrow">→</span>
         <div class="flow-step audio"><strong>Local Piper TTS</strong>Create a WAV from the transcript as written.</div><span class="flow-arrow">→</span>
-        <div class="flow-step"><strong>Choose visual path</strong>Is a Gemini key supplied with consent?</div>
+        <div class="flow-step"><strong>Choose visual path</strong>Is FLUX.1-schnell selected with a token and consent?</div>
       </div>
       <div class="flow-branches">
-        <div class="flow-branch"><strong>No key: local visuals</strong>Pillow draws animated stick-figure scenes. No image model, API key, or transcript upload to a visual provider is needed.</div>
-        <div class="flow-branch remote"><strong>Key + consent: Gemini images</strong>Send transcript and optional character reference to Gemini. Generate six images, or eight with a character reference; Pillow animates and loops the images locally.</div>
+        <div class="flow-branch"><strong>Unchecked: local visuals</strong>Pillow draws animated stick-figure scenes. No image model, token, or transcript upload to a visual provider is needed.</div>
+        <div class="flow-branch remote"><strong>Opted in: Hugging Face images</strong>Send transcript prompts to FLUX.1-schnell through an inference provider. Generate six images; Pillow animates and loops them locally. Provider charges may apply.</div>
       </div>
       <div class="flow-track">
         <div class="flow-step"><strong>Scene loops</strong>Repeat visuals across the narration duration.</div><span class="flow-arrow">→</span>
         <div class="flow-step"><strong>FFmpeg</strong>Encode the selected format and synchronize narration.</div><span class="flow-arrow">→</span>
         <div class="flow-step output"><strong>Outputs</strong>Full MP4, 15-second GIF preview, and WAV narration.</div>
       </div>
-      <p class="flow-caption">Gemini is an optional hosted image-generation model; it does not generate speech or GIF animation. A key and explicit consent are required.</p>
+      <p class="flow-caption">FLUX.1-schnell creates still images, not speech or GIF animation. This text-to-image provider path does not support character-reference images.</p>
     </div>
 
     <h2>Flow 2: Transcript + images</h2>
@@ -109,7 +109,7 @@
     <table>
       <thead><tr><th>Mode</th><th>Inputs</th><th>Visual processing</th><th>Audio</th></tr></thead>
       <tbody>
-        <tr><td>Transcript only</td><td>Transcript; optional Gemini key and character reference image</td><td>No key: local animated stick figures. With key and consent: six Gemini images, or eight with a character reference, animated locally and looped.</td><td>Local Piper narration.</td></tr>
+        <tr><td>Transcript only</td><td>Transcript; optional FLUX.1-schnell opt-in and Hugging Face token</td><td>Unchecked: local animated stick figures. Opted in: six FLUX.1-schnell images, animated locally and looped. Character references are not supported on this provider path.</td><td>Local Piper narration.</td></tr>
         <tr><td>Transcript + image sequence</td><td>Transcript and ordered images</td><td>Pillow normalizes images; FFmpeg times the sequence to the narration.</td><td>Local Piper narration.</td></tr>
         <tr><td>Existing audio + images</td><td>Audio track and ordered images</td><td>Images cycle with gentle zoom motion; the MP4 duration matches the uploaded audio.</td><td>Uses the uploaded audio. No transcript or TTS model required.</td></tr>
         <tr><td>Transcript + video</td><td>Transcript and one MP4, MOV, M4V, or WebM</td><td>FFmpeg fits or crops the uploaded footage, then loops or trims it to the narration duration.</td><td>Original video sound is replaced with local Piper narration.</td></tr>
@@ -135,13 +135,13 @@
         </tr>
         <tr>
           <td>Pillow</td>
-          <td>Normalizes uploaded images and draws or animates looping scenes for transcript-only videos when Gemini is not selected.</td>
+          <td>Normalizes uploaded images and draws or animates looping scenes for transcript-only videos when open-model generation is not selected.</td>
           <td>Runs locally. The no-key stick-figure fallback does not send the transcript to an image provider.</td>
         </tr>
         <tr>
-          <td>Gemini 3.1 Flash Lite Image (optional)</td>
-          <td>Generates still illustrations for transcript-only videos; Pillow adds motion and FFmpeg assembles the video.</td>
-          <td>Requires the user's per-job key and explicit consent. Sends the transcript and optional character reference to Google. The current app creates six scenes, or eight with a character reference. This image model is not a TTS model.</td>
+          <td>FLUX.1-schnell through Hugging Face Inference Providers (optional)</td>
+          <td>Generates six still illustrations for transcript-only videos; Pillow adds motion and FFmpeg assembles the video.</td>
+          <td>Open model weights under Apache 2.0; the model is gated and requires accepting Hugging Face access conditions. Each opted-in job uses the user's token. Inference is hosted by a provider and may be billed. This text-to-image route does not use character-reference images.</td>
         </tr>
         <tr>
           <td>Flask</td>
@@ -160,9 +160,10 @@
         </tr>
       </tbody>
     </table>
-    <h2>Could a Hugging Face model replace Gemini?</h2>
-    <p>Yes, but the listed models are large diffusion/flow image generators, not small language models. The collection includes <a href="https://huggingface.co/black-forest-labs/FLUX.1-schnell">FLUX.1 [schnell]</a> (12B parameters, 1–4 inference steps, Apache 2.0 after accepting its Hugging Face access conditions), <a href="https://huggingface.co/fal/AuraFlow-v0.3">AuraFlow v0.3</a> (7B, beta; its example uses CUDA and 50 steps), and <a href="https://huggingface.co/TencentARC/PhotoMaker-V2">PhotoMaker V2</a> (a character-identity adapter that needs an SDXL base model, rather than a standalone generator). Review each model's current card and license before use.</p>
-    <p>The current Render Docker image is a CPU-oriented Python image with no PyTorch, Diffusers, or GPU. Downloading and running 7B–12B image models there would be slow or exceed its available memory. To use one without a hosted model key, run the model on a machine with a suitable GPU and install its weights locally. Hugging Face Inference Providers can run models remotely, but require a Hugging Face token and are pay-as-you-go. The app does not currently integrate these Hugging Face image models.</p>
+    <h2>Open image models and hosting constraints</h2>
+    <p>The linked collection includes <a href="https://huggingface.co/black-forest-labs/FLUX.1-schnell">FLUX.1 [schnell]</a> (12B parameters, 1–4 inference steps, Apache 2.0 after accepting its Hugging Face access conditions), <a href="https://huggingface.co/fal/AuraFlow-v0.3">AuraFlow v0.3</a> (7B, beta; its example uses CUDA and 50 steps), and <a href="https://huggingface.co/TencentARC/PhotoMaker-V2">PhotoMaker V2</a> (a character-identity adapter that needs an SDXL base model, rather than a standalone generator). Review each model's current card and license before use.</p>
+    <p>The app uses FLUX.1-schnell through Hugging Face Inference Providers because the Render container is CPU-only. Its open weights have no per-copy model fee, but hosted inference runs through providers such as fal.ai or Wavespeed and may be charged to the token owner. An inference token with provider permission and accepted model access is required. Running the weights locally without an API token needs a suitable GPU and a separate local deployment.</p>
+    <p>Character-reference generation is intentionally deferred: FLUX.1-schnell is exposed here as text-to-image, and PhotoMaker V2 is not currently served by Hugging Face Inference Providers. The app does not claim that a text-to-image model can preserve a face from an uploaded reference.</p>
 
     <h2>Whisper is speech-to-text, not text-to-speech</h2>
     <p><a href="https://github.com/openai/whisper">Whisper</a> recognizes speech and produces text (ASR). It cannot turn a transcript into spoken audio. This app's Piper TTS remains the appropriate local model for transcript → narration. Whisper could be added separately for an audio → transcript feature; it is not a replacement for Piper.</p>
@@ -173,7 +174,7 @@
       <li>Flask validates the transcript and settings, stores the media, creates a background job, and returns its ID.</li>
       <li>The page polls the job status and displays timestamped server-side log entries; status/logs are also saved to disk for recovery.</li>
       <li>Piper synthesizes the narration. The app reads its duration with ffprobe.</li>
-      <li>The selected visual mode draws local scenes, optionally requests Gemini still illustrations, or prepares uploaded images/video. Existing-audio mode uses ffprobe to time visuals to the audio.</li>
+      <li>The selected visual mode draws local scenes, optionally requests FLUX.1-schnell images, or prepares uploaded images/video. Existing-audio mode uses ffprobe to time visuals to the audio.</li>
       <li>FFmpeg encodes the selected profile and creates a 15-second looping GIF preview (4 fps, 360 pixels wide). Audio-led image videos use 24 fps; uploaded-video mode uses 30 fps. The page shows previews and download links.</li>
     </ol>
 

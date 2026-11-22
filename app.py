@@ -1,5 +1,3 @@
-import base64
-import io
 import json
 import math
 import os
@@ -14,14 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Callable
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
+from huggingface_hub import InferenceClient
+from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 BASE_DIR = Path(__file__).resolve().parent
+IMAGE_MODEL_ID = "black-forest-labs/FLUX.1-schnell"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", DATA_DIR / "output"))
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATA_DIR / "uploads"))
@@ -85,7 +84,7 @@ FORMATS = {
 GENERATION_MODES = {
     "transcript_only": {
         "title": "Transcript only",
-        "description": "Create a narrated video with illustrated scenes. Add a Gemini key for AI-generated artwork.",
+        "description": "Create a narrated video with local stick-figure scenes or optional Hugging Face image generation.",
         "icon": "✦",
     },
     "images": {
@@ -515,93 +514,47 @@ def transcript_scenes(transcript: str, scene_count: int) -> list[str]:
     return [scene or transcript for scene in scenes]
 
 
-def generate_gemini_scene_image(
+def generate_huggingface_scene_image(
     scene: str,
     transcript: str,
     scene_index: int,
     scene_count: int,
     destination: Path,
-    api_key: str,
-    character_reference: bytes | None = None,
+    hf_token: str,
+    width: int,
+    height: int,
 ) -> None:
     prompt = (
-        "Create one polished, cinematic 16:9 storybook illustration for a narrated video. "
-        "Use expressive characters, rich color, clear composition, and a consistent "
+        "Create one polished, cinematic storybook illustration for a narrated video. "
+        "Use expressive composition, rich color, clear lighting, and a cohesive "
         "hand-painted editorial animation style. Do not include words, lettering, "
         "captions, logos, borders, or watermarks. "
         f"Create scene {scene_index + 1} of {scene_count} in a distinct, consistent "
         "storyboard sequence. Illustrate this narration "
         f"moment: {scene}. Story context: {transcript}"
     )
-    if character_reference:
-        prompt += (
-            ". Use the person or character in the supplied reference image as the "
-            "recurring main character. Preserve their recognizable appearance."
+    try:
+        client = InferenceClient(
+            model=IMAGE_MODEL_ID,
+            provider="auto",
+            token=hf_token,
+            timeout=120,
         )
-    content: list[dict] = [{"type": "text", "text": prompt}]
-    if character_reference:
-        content.append({
-            "type": "image",
-            "mime_type": "image/jpeg",
-            "data": base64.b64encode(character_reference).decode("ascii"),
-        })
-
-    body = json.dumps({
-        "model": "gemini-3.1-flash-lite-image",
-        "input": content,
-        "response_format": {
-            "type": "image",
-            "mime_type": "image/png",
-            "aspect_ratio": "16:9",
-            "image_size": "1024px",
-        },
-    }).encode("utf-8")
-    api_request = Request(
-        "https://generativelanguage.googleapis.com/v1beta/interactions",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Api-Revision": "2026-05-20",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(api_request, timeout=120) as response:
-            result = json.loads(response.read())
-    except HTTPError as exc:
+        image = client.text_to_image(
+            prompt,
+            width=width,
+            height=height,
+            num_inference_steps=4,
+            guidance_scale=0.0,
+        )
+        image.save(destination, format="PNG")
+    except HfHubHTTPError as exc:
         raise RuntimeError(
-            f"Gemini image generation failed (HTTP {exc.code}). "
-            "Check the API key, model access, and quota."
+            f"Hugging Face image generation failed: {exc}. "
+            "Check the token, model access, and provider credits."
         ) from exc
-    except URLError as exc:
-        raise RuntimeError(f"Could not connect to Gemini: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Gemini returned an invalid image response.") from exc
-
-    if not isinstance(result, dict):
-        raise RuntimeError("Gemini returned an invalid image response.")
-    image_data = None
-    output_image = result.get("output_image")
-    if isinstance(output_image, dict):
-        image_data = output_image.get("data")
-    if not image_data:
-        outputs = result.get("output", [])
-        if not isinstance(outputs, list):
-            raise RuntimeError("Gemini returned an invalid image response.")
-        for output in outputs:
-            if isinstance(output, dict) and output.get("type") == "image":
-                image_data = output.get("data")
-                if image_data:
-                    break
-    if not isinstance(image_data, str):
-        raise RuntimeError("Gemini did not return an image for a transcript scene.")
-    try:
-        if image_data.startswith("data:") and "," in image_data:
-            image_data = image_data.split(",", 1)[1]
-        destination.write_bytes(base64.b64decode(image_data, validate=True))
-    except (ValueError, OSError) as exc:
-        raise RuntimeError("Gemini returned invalid image data.") from exc
+    except InferenceTimeoutError as exc:
+        raise RuntimeError("Hugging Face image generation timed out.") from exc
 
 
 def create_animated_scene_gif(
@@ -668,32 +621,39 @@ def create_animated_scene_gif(
     )
 
 
-def generate_gemini_animations(
+def generate_huggingface_animations(
     transcript: str,
     work_dir: Path,
     width: int,
     height: int,
-    has_character: bool,
-    api_key: str,
-    character_reference: bytes | None,
+    hf_token: str,
     log: Callable[[str, int], None],
 ) -> list[Path]:
-    scene_count = 8 if has_character else 6
+    scene_count = 6
     scenes = transcript_scenes(transcript, scene_count)
+
+    def model_dimension(value: int) -> int:
+        return max(256, round(value / 64) * 64)
+
+    model_scale = min(1.0, 1024 / max(width, height))
+    model_width = model_dimension(round(width * model_scale))
+    model_height = model_dimension(round(height * model_scale))
     render_scale = min(1.0, 640 / max(width, height))
     width = max(1, round(width * render_scale))
     height = max(1, round(height * render_scale))
+
     def render_scene(index: int, scene: str) -> Path:
-        image_path = work_dir / f"gemini-scene-{index:02d}.png"
-        animation_path = work_dir / f"gemini-animation-{index:02d}.gif"
-        generate_gemini_scene_image(
+        image_path = work_dir / f"hf-scene-{index:02d}.png"
+        animation_path = work_dir / f"hf-animation-{index:02d}.gif"
+        generate_huggingface_scene_image(
             scene,
             transcript,
             index,
             len(scenes),
             image_path,
-            api_key,
-            character_reference,
+            hf_token,
+            model_width,
+            model_height,
         )
         create_animated_scene_gif(
             image_path,
@@ -706,12 +666,12 @@ def generate_gemini_animations(
         return animation_path
 
     log(
-        f"Generating {len(scenes)} Gemini illustrations and animated loops.",
+        f"Generating {len(scenes)} FLUX.1-schnell illustrations through Hugging Face.",
         26,
     )
     with ThreadPoolExecutor(max_workers=min(3, len(scenes))) as executor:
         paths = list(executor.map(render_scene, range(len(scenes)), scenes))
-    log(f"Created {len(paths)} animated Gemini scenes.", 42)
+    log(f"Created {len(paths)} animated Hugging Face scenes.", 42)
     return paths
 
 
@@ -1004,8 +964,7 @@ def create_assets(
     audio_input_path: Path | None,
     work_dir: Path,
     log: Callable[[str, int], None],
-    gemini_api_key: str = "",
-    character_reference: bytes | None = None,
+    hf_token: str = "",
 ) -> tuple[Path, Path, Path]:
     transcript_path = work_dir / "transcript.txt"
     audio_path = audio_input_path or work_dir / "audio.wav"
@@ -1026,15 +985,13 @@ def create_assets(
     log(f"Output profile: {output_format['label']} ({width}x{height}).", 23)
 
     if mode == "transcript_only":
-        if gemini_api_key:
-            image_paths = generate_gemini_animations(
+        if hf_token:
+            image_paths = generate_huggingface_animations(
                 transcript,
                 work_dir,
                 width,
                 height,
-                bool(character_reference),
-                gemini_api_key,
-                character_reference,
+                hf_token,
                 log,
             )
         else:
@@ -1233,8 +1190,7 @@ def generate_job(
     video_path: Path | None,
     audio_input_path: Path | None,
     work_dir: Path,
-    gemini_api_key: str = "",
-    character_reference: bytes | None = None,
+    hf_token: str = "",
 ) -> None:
     log_job(job_id, "Job is queued; waiting for the generation slot.", status="queued")
     with generation_lock:
@@ -1242,10 +1198,10 @@ def generate_job(
             job_id,
             (
                 (
-                    "Generating AI story illustrations with Gemini and narration with "
-                    f"Piper voice: {VOICE_MODELS[voice_id]['label']}."
+                    "Generating open-model images through Hugging Face with narration "
+                    f"from Piper: {VOICE_MODELS[voice_id]['label']}."
                 )
-                if gemini_api_key
+                if hf_token
                 else f"Generation started with Piper voice: {VOICE_MODELS[voice_id]['label']}."
                 if audio_input_path is None
                 else "Generation started with the uploaded audio."
@@ -1265,8 +1221,7 @@ def generate_job(
                 audio_input_path,
                 work_dir,
                 lambda message, progress: log_job(job_id, message, progress),
-                gemini_api_key,
-                character_reference,
+                hf_token,
             )
         except (subprocess.CalledProcessError, ImportError, OSError, RuntimeError, ValueError) as exc:
             files = existing_output_files(work_dir)
@@ -1414,15 +1369,6 @@ def append_video_upload_chunk(upload_id: str, chunk_index: int):
         )
 
 
-def prepare_character_reference(image_data: bytes) -> bytes:
-    with Image.open(io.BytesIO(image_data)) as source_image:
-        image = ImageOps.exif_transpose(source_image).convert("RGB")
-        image.thumbnail((768, 768), Image.Resampling.LANCZOS)
-        optimized = io.BytesIO()
-        image.save(optimized, format="JPEG", quality=82)
-    return optimized.getvalue()
-
-
 @app.post("/generate")
 def generate():
     transcript = request.form.get("transcript", "").strip()
@@ -1433,7 +1379,8 @@ def generate():
     voice_id = f"{language}_{gender}"
     tone = request.form.get("tone", "natural")
     layout = request.form.get("layout", "fit")
-    gemini_api_key = request.form.get("gemini_api_key", "").strip()
+    use_hf_images = request.form.get("use_hf_images") == "yes"
+    hf_token = request.form.get("hf_token", "").strip()
     uploads = request.files.getlist("images")
 
     if mode != "audio_images" and not transcript:
@@ -1450,24 +1397,13 @@ def generate():
         return jsonify(error="Choose a valid delivery pace."), 400
     if layout not in {"fit", "fill"}:
         return jsonify(error="Choose whether to fit or crop the visual."), 400
-    if mode == "transcript_only":
-        character_upload = request.files.get("character_image")
-        if character_upload is not None and character_upload.filename:
-            if Path(character_upload.filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
-                return jsonify(error="Use a JPG, PNG, or WebP character reference image."), 400
-            try:
-                character_reference = prepare_character_reference(character_upload.read())
-            except (OSError, ValueError, Image.DecompressionBombError) as exc:
-                return jsonify(error=f"Could not read the character reference image: {exc}"), 400
-        else:
-            character_reference = None
-        if character_reference and not gemini_api_key:
-            return jsonify(error="Enter a Gemini API key to use a character reference image."), 400
-        if gemini_api_key and request.form.get("external_visual_consent") != "yes":
-            return jsonify(error="Confirm the Gemini data-sharing notice before generating AI scenes."), 400
+    if mode == "transcript_only" and use_hf_images:
+        if not hf_token:
+            return jsonify(error="Enter a Hugging Face token to use the open image model."), 400
+        if request.form.get("external_visual_consent") != "yes":
+            return jsonify(error="Confirm the Hugging Face inference notice before generating images."), 400
     else:
-        character_reference = None
-        gemini_api_key = ""
+        hf_token = ""
 
     valid_uploads = []
     image_paths = []
@@ -1560,7 +1496,7 @@ def generate():
             "language": language,
             "tone": TONES[tone]["label"],
             "mode": mode,
-            "visual_source": "Gemini" if gemini_api_key else "Local",
+            "visual_source": "Hugging Face" if hf_token else "Local",
         }
     uploaded_paths = image_paths + [
         path for path in (video_path, audio_input_path) if path is not None
@@ -1572,7 +1508,11 @@ def generate():
     media_description = (
         f"{len(image_paths)} images"
         if mode in {"images", "audio_images"}
-        else "one video" if mode == "video" else "transcript-only stick-figure visuals"
+        else "one video"
+        if mode == "video"
+        else "transcript-only Hugging Face visuals"
+        if hf_token
+        else "transcript-only stick-figure visuals"
     )
     if mode == "audio_images":
         media_description += " and uploaded audio"
@@ -1596,8 +1536,7 @@ def generate():
             video_path,
             audio_input_path,
             work_dir,
-            gemini_api_key,
-            character_reference,
+            hf_token,
         ),
         daemon=True,
     ).start()
