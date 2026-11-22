@@ -461,7 +461,7 @@ def generate_stickman_animations(
     frame_count = max(20, min(40, round(scene_duration * fps)))
     paths = []
     scale = min(width, height)
-    stroke = max(4, round(scale * 0.009))
+    stroke = max(5, round(scale * 0.012))
     head_radius = max(14, round(scale * 0.045))
     figure_height = round(min(height * 0.40, width * 0.30))
     captions_font = ImageFont.load_default(size=max(18, round(scale * 0.035)))
@@ -550,6 +550,11 @@ def generate_stickman_animations(
             else:
                 draw.arc((head_cx - head_radius * 0.28, head_cy + head_radius * 0.05, head_cx + head_radius * 0.28, head_cy + head_radius * 0.35), 0, 180, fill="#f97316", width=max(2, stroke // 2))
             draw.line((cx, torso_top, cx, torso_bottom), fill=torso, width=stroke)
+            joint_radius = stroke // 2
+            draw.ellipse(
+                (cx - joint_radius, torso_bottom - joint_radius, cx + joint_radius, torso_bottom + joint_radius),
+                fill=torso,
+            )
 
             if action == "success":
                 arms = [(cx - arm_reach, arm_y - arm_reach), (cx + arm_reach, arm_y - arm_reach)]
@@ -571,6 +576,11 @@ def generate_stickman_animations(
                 elbow_x = round((cx + hand_x) / 2)
                 elbow_y = round((arm_y + hand_y) / 2 + (stroke * 2 if hand_x < cx else 0))
                 draw.line((cx, arm_y, elbow_x, elbow_y, hand_x, hand_y), fill=torso, width=stroke, joint="curve")
+                for joint_x, joint_y in ((cx, arm_y), (elbow_x, elbow_y)):
+                    draw.ellipse(
+                        (joint_x - joint_radius, joint_y - joint_radius, joint_x + joint_radius, joint_y + joint_radius),
+                        fill=torso,
+                    )
                 draw.ellipse((hand_x - stroke, hand_y - stroke, hand_x + stroke, hand_y + stroke), fill="#f97316")
 
             leg_swing = math.sin(phase) * figure_height * 0.11 if action in {"growth", "challenge", "wave"} else math.sin(phase * 2) * figure_height * 0.035
@@ -580,6 +590,10 @@ def generate_stickman_animations(
                 foot_x = cx + round(direction * figure_height * 0.18 + leg_swing * direction)
                 foot_y_leg = foot_y
                 draw.line((cx, torso_bottom, knee_x, knee_y, foot_x, foot_y_leg), fill=torso, width=stroke, joint="curve")
+                draw.ellipse(
+                    (knee_x - joint_radius, knee_y - joint_radius, knee_x + joint_radius, knee_y + joint_radius),
+                    fill=torso,
+                )
                 draw.line((foot_x, foot_y_leg, foot_x + round(figure_height * 0.07), foot_y_leg), fill=torso, width=stroke)
 
             prop_x = round(width * 0.76)
